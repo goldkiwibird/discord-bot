@@ -1,0 +1,120 @@
+{
+  "rules_config": {
+    "categories": {
+      "en": "――――――― 영어 채널",
+      "zh-TW": "――――――― 번체 채널"
+    },
+    "channels": {
+      "en": "커뮤니티-규칙-영어",
+      "zh-TW": "커뮤니티-규칙-번체"
+    },
+    "roles": {
+      "en": "EN Guardian",
+      "zh-TW": "TC Guardian"
+    },
+    "rules": {
+      "en": "1. Welcome to the official Guardian Maiden Discord! This is a space for everyone to communicate happily and safely. **Respect others**; all forms of harassment, insults, hate speech, threats, witch hunts, discriminatory language, and discrimination based on race, gender, political views, religion, region, or country are strictly prohibited.\n2. **Do not post inappropriate content**, including sexual, illegal, unfair game exploitation, illegal leaks, illegal programs, and content that violates Guardian Maiden's operational policies. This rule also applies to nicknames and profile images.\n3. Mentioning moderators in posts may result in **deletion without prior warning**.\n4. **Impersonating other users or moderators is prohibited**. This applies to nicknames and profile pictures, and violators may be kicked from the channel without warning.\n5. **Moderators will not send you DMs** and cannot receive DMs from users, except in special cases like event winner announcements or sanction results.\n6. **Moderators will never ask for your account password**. Please make efforts to protect your own personal information.\n7. Official Discord events will only be conducted through **official post registrations**.\n8. **Posting advertisements or related links/media is prohibited**. This includes posting links to your personal social media (Discord, TikTok, YouTube, Twitch, Facebook, Twitter, Instagram, etc.).\n9. Media/links posted in this channel must be directly related to Guardian Maiden. **Duplicate posting and spamming are prohibited**.\n10. Actions that negatively impact the game or the company may result in sanctions.\n11. Leaking confidential information about others or other companies is prohibited.\n12. Please use the report channel if you witness rule violations or threats to safety.\n13. Please **keep conversations relevant** to each specific channel and follow any existing guidelines.\n14. Violating server rules may result in being **kicked or restricted from entering the server**. Unlisted inappropriate behaviors may also be sanctioned at the moderators' discretion.\n15. Moderators will make final decisions considering various situations. Severe deviations from social norms will be handled based on severity.\n16. Unspecified exceptional situations will be judged by moderators. This is to create a safe Discord environment. **If you agree, click the verify button below to join the Guardian Maiden Official Discord!**",
+      "zh-TW": "1. 歡迎來到 Guardian Maiden 官方 Discord！這是一個讓大家愉快、安全交流的空間。**請尊重他人**；嚴禁所有形式的騷擾、侮辱、仇恨言論、威脅、獵巫、歧視性言論，以及基於種族、性別、政治觀點、宗教、地區或國家的歧視。\n2. **禁止發佈不當內容**，包括色情、非法、不正當利用遊戲、非法洩漏、非法程式及違反營運政策的內容。此規則也適用於暱稱和個人資料圖片。\n3. 在貼文中提及管理員可能會被**刪除且不另行警告**。\n4. **禁止冒充其他用戶或管理員**。此規定適用於暱稱和頭像，違者將在無警告的情況下被踢出頻道。\n5. **管理員不會向您發送私訊 (DM)**，也無法接收用戶的私訊（活動中獎通知或制裁結果等特殊情況除外）。\n6. **管理員絕對不會詢問您的帳號密碼**。請努力保護您的個人資訊。\n7. Discord 活動僅透過**官方貼文註冊**進行。\n8. **禁止發佈廣告或相關連結/媒體**。這包括發佈您個人社交媒體（Discord、TikTok、YouTube、Twitch、Facebook、Twitter、Instagram 等）的連結。\n9. 本頻道發佈的媒體/連結必須與 Guardian Maiden 直接相關。**禁止重複發文和洗版**。\n10. 對遊戲或公司造成負面影響的行為可能會受到制裁。\n11. 禁止洩漏他人或其他公司的機密資訊。\n12. 如果您發現違反規則或威脅安全的行為，請透過舉報頻道進行檢舉。\n13. 請**保持對話與頻道主題相關**，並遵守現有的頻道指南。\n14. 違反伺服器規則可能會導致被**踢出或限制進入伺服器**。未列出的不當行為也可能由管理員酌情制裁。\n15. 管理員將考慮各種情況做出最終決定。嚴重偏離社會規範的行為將根據其嚴重程度進行處理。\n16. 未說明的例外情況將由管理員判斷。這是為了創造一個安全的 Discord 環境。**如果您同意，請點擊下方的確認按鈕加入 Guardian Maiden 官方 Discord！**"
+    },
+    "buttons": {
+      "en": { "agree": "✅ Agree", "disagree": "❌ Disagree" },
+      "zh-TW": { "agree": "✅ 同意", "disagree": "❌ 撤銷同意" }
+    },
+    "messages": {
+      "en": {
+        "agree": "🎉 Thank you for agreeing to the rules!\nPlease refer to the information below for a smooth Discord experience.\n\n⚙️ **Discord Tips**\n\n🌐 **Reset Language Roles:** You can select **[Channels & Roles]** at the top left to reset your language-specific roles at any time.\n\n🙈 **Organize Channel List:** You can hide unwanted channels from **[Browse Channels]**.",
+        "disagree": "Your agreement has been canceled, and your channel access has been revoked."
+      },
+      "zh-TW": {
+        "agree": "🎉 感謝您同意規則！\n為了順利使用 Discord，請參考以下指南。\n\n⚙️ **Discord 使用提示**\n\n🌐 **重設語言身分組：** 您可以選擇左上角的 **[頻道與身分組]** 隨時重設您的語言身分組。\n\n🙈 **整理頻道列表：** 您可以在 **[瀏覽頻道]** 中隱藏不想看到的頻道。",
+        "disagree": "您的同意已取消，頻道訪問權限已被收回。"
+      }
+    }
+  },
+  "voice_config": {
+    "categories": {
+      "――――――― 영어 음성 채널": { "channel": "🔊영어음성채팅방-생성", "lang": "en" },
+      "――――――― 번체 음성 채널": { "channel": "🔊번체음성채팅방-생성", "lang": "zh-TW" }
+    },
+    "messages": {
+      "en": {
+        "delete_reason_empty": "Deleted automatically due to being empty for 5 minutes.",
+        "modal_title": "Create Voice Channel",
+        "modal_name_label": "Channel Name",
+        "modal_name_default": "{name}'s Room",
+        "modal_limit_label": "Max Capacity (2~99)",
+        "capacity_range_error": "❌ Capacity must be between 2 and 99.",
+        "capacity_type_error": "❌ Please enter numbers only for capacity.",
+        "creation_success": "✅ {mention} Voice channel has been created!\n> It will be auto-deleted if no one joins within 5 minutes.",
+        "create_button": "Create Voice Channel",
+        "already_have_channel": "❌ You already have a voice channel ({mention})! Please delete or join the existing one.",
+        "notice_text": "Click the button below to set the capacity and create a temporary voice channel.\n\n📌 **Notice**\n• You can only create 1 room per person.\n• Rooms that no one uses will be deleted after **5 minutes**.",
+        "notice_text_check": "Click the button below to set the capacity",
+        "category_full_error": "❌ The category is full (max 50 channels). Cannot create more rooms right now."
+      },
+      "zh-TW": {
+        "delete_reason_empty": "因5分鐘內無人使用，已自動刪除。",
+        "modal_title": "創建語音頻道",
+        "modal_name_label": "頻道名稱",
+        "modal_name_default": "{name} 的房間",
+        "modal_limit_label": "最大人數限制 (2~99)",
+        "capacity_range_error": "❌ 人數必須在 2 到 99 之間。",
+        "capacity_type_error": "❌ 請僅輸入數字作為人數限制。",
+        "creation_success": "✅ {mention} 語音頻道已創建！\n> 若5分鐘內無人加入，將自動刪除。",
+        "create_button": "創建語音頻道",
+        "already_have_channel": "❌ 您已經擁有專屬語音頻道 ({mention})！請刪除或加入現有的頻道。",
+        "notice_text": "點擊下方按鈕設定人數並創建臨時語音頻道。\n\n📌 **注意事項**\n• 每人只能創建 1 個房間。\n• 無人使用的房間將在 **5分鐘後** 刪除。",
+        "notice_text_check": "點擊下方按鈕設定人數",
+        "category_full_error": "❌ 該類別的頻道已滿 (最多50個)，目前無法創建更多房間。"
+      }
+    }
+  },
+  "text_config": {
+    "categories": {
+      "――――――― 영어 채널": { "channel": "🔒영어전용채팅방", "lang": "en" },
+      "――――――― 번체 채널": { "channel": "🔒번체전용채팅방", "lang": "zh-TW" }
+    },
+    "messages": {
+      "en": {
+        "delete_reason_30days": "Deleted automatically due to no activity for 30 days.",
+        "select_user_error": "❌ Please select a user from the menu first.",
+        "invite_success": "✅ Invited {users} to the room!\n",
+        "invite_admin_skip": "⚠️ {admins} is a server admin and can already see the room, so they were excluded from the invite.",
+        "invite_empty_error": "❌ No users were invited.",
+        "confirm_button": "Confirm",
+        "invite_button": "Invite",
+        "invite_only_owner_error": "❌ Only the room owner (creator) can invite users.",
+        "invite_menu_desc": "Please select the user to invite from the menu below and click the **Confirm** button.",
+        "modal_title": "Create Private Thread",
+        "modal_name_label": "Thread Name (⚠️ 1 max / Auto-delete)",
+        "modal_name_default": "{name}'s Thread",
+        "creation_success": "✅ Private thread has been created!",
+        "channel_guide_text": "🎉 {mention}'s private thread has been created!\n\n> Only you and admins can see this thread right now.\n> To chat with friends, click the **'Invite'** button below and select users.",
+        "create_button": "Create Private Thread",
+        "already_have_channel": "❌ You already have a private thread! Please delete or use the existing one.",
+        "notice_text": "Click the button below to create a private thread.\n\n📌 **Notice**\n• You can only create 1 thread per person.\n• The thread owner can invite other people.\n• Threads not used (based on last chat) will be deleted after **30 days**.",
+        "notice_text_check": "Click the button below to create a private thread."
+      },
+      "zh-TW": {
+        "delete_reason_30days": "因30天內未使用，已自動刪除。",
+        "select_user_error": "❌ 請先從選單中選擇用戶。",
+        "invite_success": "✅ 已邀請 {users} 進入討論串！\n",
+        "invite_admin_skip": "⚠️ {admins} 是伺服器管理員，已經可以查看此討論串，因此未包含在邀請中。",
+        "invite_empty_error": "❌ 未邀請任何用戶。",
+        "confirm_button": "確認",
+        "invite_button": "邀請",
+        "invite_only_owner_error": "❌ 只有房主（討論串創建者）才能邀請用戶。",
+        "invite_menu_desc": "請從下方選單選擇要邀請的用戶，然後點擊 **確認** 按鈕。",
+        "modal_title": "創建專屬討論串",
+        "modal_name_label": "討論串名稱 (⚠️ 每人1間 / 未使用將自動刪除)",
+        "modal_name_default": "{name} 的專屬討論串",
+        "creation_success": "✅ 專屬討論串已創建！",
+        "channel_guide_text": "🎉 {mention} 的專屬討論串已創建！\n\n> 目前只有您和管理員可以看到此討論串。\n> 若要與朋友聊天，請點擊下方 **'邀請'** 按鈕並選擇用戶。",
+        "create_button": "創建專屬討論串",
+        "already_have_channel": "❌ 您已經擁有專屬討論串！請刪除或使用現有的討論串。",
+        "notice_text": "點擊下方按鈕創建專屬討論串。\n\n📌 **注意事項**\n• 每人只能創建 1 個討論串。\n• 房主可以在討論串內邀請其他人。\n• 未使用的討論串（以最後聊天為準）將在 **30天後** 刪除。",
+        "notice_text_check": "點擊下方按鈕創建專屬討論串。"
+      }
+    }
+  }
+}
