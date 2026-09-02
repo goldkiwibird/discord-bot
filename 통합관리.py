@@ -215,12 +215,19 @@ class VoiceCapacityModal(discord.ui.Modal):
             return
 
         category = interaction.channel.category
+        
+        # 카테고리 기본 권한을 복사한 후, 생성자에게 채널 관리(삭제) 권한 추가
+        overwrites = dict(category.overwrites) if category else {}
+        user_overwrite = overwrites.get(interaction.user, discord.PermissionOverwrite())
+        user_overwrite.manage_channels = True
+        overwrites[interaction.user] = user_overwrite
+
         try:
             new_channel = await interaction.guild.create_voice_channel(
                 name=self.name_input.value,
                 category=category,
                 user_limit=user_limit,
-                overwrites=category.overwrites if category else {}
+                overwrites=overwrites
             )
         except discord.HTTPException as e:
             if e.code == 50024:
@@ -410,8 +417,18 @@ class TextChannelCreateView(discord.ui.View):
                 existing_thread = None
 
             if existing_thread:
-                await interaction.response.send_message(get_msg("text_config", self.lang, "already_have_channel"), ephemeral=True)
-                return
+                # 보관(Archived) 상태인지 확인 후 해제
+                if getattr(existing_thread, 'archived', False):
+                    await existing_thread.edit(archived=False)
+                    if self.lang == "zh-TW":
+                        msg = f"✅ 已取消隱藏並恢復您現有的討論串 ({existing_thread.mention})。"
+                    else:
+                        msg = f"✅ Unarchived your existing thread ({existing_thread.mention})."
+                    await interaction.response.send_message(msg, ephemeral=True)
+                    return
+                else:
+                    await interaction.response.send_message(get_msg("text_config", self.lang, "already_have_channel"), ephemeral=True)
+                    return
             else:
                 user_text_threads.pop(user_id, None)
                 text_thread_owners.pop(thread_id, None)
@@ -619,6 +636,19 @@ async def on_ready():
             has_cleaned_voice = True
 
     if has_cleaned_voice:
+        save_data()
+
+    # 4.5. 복구: 비공개 텍스트 쓰레드 데이터 검증
+    has_cleaned_text = False
+    for thread_id, owner_id in list(text_thread_owners.items()):
+        try:
+            await bot.fetch_channel(thread_id)
+        except (discord.NotFound, discord.HTTPException):
+            text_thread_owners.pop(thread_id, None)
+            user_text_threads.pop(owner_id, None)
+            has_cleaned_text = True
+
+    if has_cleaned_text:
         save_data()
 
     # 5. 길드별 채널 메시지 및 버튼 자동 설치
