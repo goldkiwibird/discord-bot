@@ -1,4 +1,10 @@
 {
+  "backup_config": {
+    "delete_log_channel": "메시지-삭제-로그",
+    "image_log_channel": "이미지-백업-로그",
+    "forum_log_channel": "포럼-백업-로그",
+    "manage_log_channel": "관리-로그"
+  },
   "rules_config": {
     "categories": {
       "en": "――――――― 영어 채널",
@@ -116,4 +122,21 @@
         "notice_text_check": "點擊下方按鈕創建專屬討論串。"
       }
     }
+  },
+  "translation_config": {
+    "categories": {
+      "――――――― 영어 채널": {
+        "target_channel": "번역-영어",
+        "target_lang": "ko"
+      },
+      "――――――― 번체 채널": {
+        "target_channel": "번역-번체",
+        "target_lang": "ko"
+      }
+    }
+  },
+  "string_dictionary": {
+    "Guardian Maiden": "가디언 메이든",
+    "VP": "비전 포인트"
   }
+}
