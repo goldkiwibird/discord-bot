@@ -40,17 +40,17 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # 상태 데이터
 config = {}
-user_voice_channels = {}   # {user_id: channel_id}
-voice_channel_owners = {}  # {channel_id: user_id}
-voice_empty_tasks = {}     # {channel_id: Task}
+user_voice_channels = {}
+voice_channel_owners = {}
+voice_empty_tasks = {}
 
-user_text_threads = {}     # {user_id: thread_id}
-text_thread_owners = {}    # {thread_id: user_id}
+user_text_threads = {}
+text_thread_owners = {}
 
-web_server_started = False  # 웹서버 중복 구동 방지 플래그
+web_server_started = False
 
 # ---------------------------------------------------------
-# Render 전용 HTTP 간이 웹서버 (24시간 슬립 방지용)
+# Render 전용 HTTP 간이 웹서버
 # ---------------------------------------------------------
 async def start_web_server():
     global web_server_started
@@ -63,14 +63,13 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render가 자동으로 부여하는 포트 번호 수신 (기본 10000)
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"🌐 Render 간이 웹서버 구동 완료 (포트: {port})")
 
 # ---------------------------------------------------------
-# 데이터 로드 및 저장 (용량 부족 예외 처리 포함)
+# 데이터 로드 및 저장
 # ---------------------------------------------------------
 def load_config():
     global config
@@ -216,7 +215,6 @@ class VoiceCapacityModal(discord.ui.Modal):
 
         category = interaction.channel.category
         
-        # 카테고리 기본 권한을 복사한 후, 생성자에게 채널 관리(삭제) 권한 추가
         overwrites = dict(category.overwrites) if category else {}
         user_overwrite = overwrites.get(interaction.user, discord.PermissionOverwrite())
         user_overwrite.manage_channels = True
@@ -408,11 +406,7 @@ class TextChannelCreateView(discord.ui.View):
         self.add_item(btn)
 
     async def create_callback(self, interaction: discord.Interaction):
-        # 기존에 있던 user_id in user_text_threads 검사 및 채널 중복 확인 로직 삭제 완료
-        default_fmt = get_msg("text_config", self.lang, "modal_name_default", "{name}'s Thread")
-        default_name = default_fmt.format(name=interaction.user.display_name)
-        await interaction.response.send_modal(TextThreadModal(default_name, self.lang))
-
+        # 1인 1개 채널 확인 로직 삭제 완료. 바로 생성 모달 띄우기 (중복 코드 제거됨)
         default_fmt = get_msg("text_config", self.lang, "modal_name_default", "{name}'s Thread")
         default_name = default_fmt.format(name=interaction.user.display_name)
         await interaction.response.send_modal(TextThreadModal(default_name, self.lang))
@@ -534,15 +528,14 @@ async def setup_rules_channel(guild):
         if cat:
             chan = discord.utils.get(cat.text_channels, name=r_chans.get(lang))
             if chan:
-                has_msg = False
-                async for m in chan.history(limit=10):
+                # 시작할 때 봇이 쓴 기존 규칙 메시지를 모두 삭제하고 새로 작성
+                async for m in chan.history(limit=20):
                     if m.author == bot.user:
-                        has_msg = True
-                        break
-                if not has_msg:
-                    rule_text = config.get("rules_config", {}).get("rules", {}).get(lang, "")
-                    embed = discord.Embed(description=rule_text, color=discord.Color.blue())
-                    await chan.send(embed=embed, view=RuleAgreementView(lang))
+                        await m.delete()
+                
+                rule_text = config.get("rules_config", {}).get("rules", {}).get(lang, "")
+                embed = discord.Embed(description=rule_text, color=discord.Color.blue())
+                await chan.send(embed=embed, view=RuleAgreementView(lang))
 
 async def setup_voice_channel(guild):
     v_cats = config.get("voice_config", {}).get("categories", {})
@@ -552,15 +545,13 @@ async def setup_voice_channel(guild):
             chan = discord.utils.get(category.text_channels, name=conf["channel"])
             if chan:
                 lang = conf["lang"]
-                check_txt = get_msg("voice_config", lang, "notice_text_check")
-                has_msg = False
-                async for m in chan.history(limit=10):
-                    if m.author == bot.user and check_txt in m.content:
-                        has_msg = True
-                        break
-                if not has_msg:
-                    notice = get_msg("voice_config", lang, "notice_text")
-                    await chan.send(notice, view=VoiceChannelCreateView(lang))
+                # 봇이 쓴 기존 공지 메시지를 모두 삭제하고 새로 작성
+                async for m in chan.history(limit=20):
+                    if m.author == bot.user:
+                        await m.delete()
+                
+                notice = get_msg("voice_config", lang, "notice_text")
+                await chan.send(notice, view=VoiceChannelCreateView(lang))
 
 async def setup_text_channel(guild):
     t_cats = config.get("text_config", {}).get("categories", {})
@@ -570,38 +561,32 @@ async def setup_text_channel(guild):
             chan = discord.utils.get(category.text_channels, name=conf["channel"])
             if chan:
                 lang = conf["lang"]
-                check_txt = get_msg("text_config", lang, "notice_text_check")
-                has_msg = False
-                async for m in chan.history(limit=10):
-                    if m.author == bot.user and check_txt in m.content:
-                        has_msg = True
-                        break
-                if not has_msg:
-                    notice = get_msg("text_config", lang, "notice_text")
-                    await chan.send(notice, view=TextChannelCreateView(lang))
+                # 봇이 쓴 기존 버튼 메시지를 모두 삭제하여 무조건 새로 쓰도록 변경
+                async for m in chan.history(limit=20):
+                    if m.author == bot.user:
+                        await m.delete()
+
+                notice = get_msg("text_config", lang, "notice_text")
+                await chan.send(notice, view=TextChannelCreateView(lang))
 
 @bot.event
 async def on_ready():
     print(f"✅ 통합 관리 봇 로그인 완료: {bot.user}")
     
-    # 1. Render 전용 간이 웹서버 가동
     await start_web_server()
     
     load_config()
     load_data()
 
-    # 2. View 영구 등록
     for lang in ["en", "zh-TW"]:
         bot.add_view(RuleAgreementView(lang))
         bot.add_view(VoiceChannelCreateView(lang))
         bot.add_view(TextChannelCreateView(lang))
         bot.add_view(InviteButtonView(lang))
 
-    # 3. 비공개 스레드 삭제 체크 백그라운드 루프 시작
     if not check_inactive_threads.is_running():
         check_inactive_threads.start()
 
-    # 4. 복구: 음성 채널 데이터 검증 및 타이머 세팅
     has_cleaned_voice = False
     for channel_id, owner_id in list(voice_channel_owners.items()):
         try:
@@ -617,7 +602,6 @@ async def on_ready():
     if has_cleaned_voice:
         save_data()
 
-    # 4.5. 복구: 비공개 텍스트 쓰레드 데이터 검증
     has_cleaned_text = False
     for thread_id, owner_id in list(text_thread_owners.items()):
         try:
@@ -630,7 +614,6 @@ async def on_ready():
     if has_cleaned_text:
         save_data()
 
-    # 5. 길드별 채널 메시지 및 버튼 자동 설치
     for guild in bot.guilds:
         try:
             await setup_rules_channel(guild)
@@ -652,7 +635,7 @@ async def on_voice_state_update(member, before, after):
         voice_empty_tasks.pop(after.channel.id, None)
 
 # ---------------------------------------------------------
-# 실행 (Render 환경 변수 BOT_TOKEN 읽기)
+# 실행
 # ---------------------------------------------------------
 TOKEN = os.getenv("BOT_TOKEN", "")
 bot.run(TOKEN)
