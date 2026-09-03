@@ -86,13 +86,13 @@
         "invite_only_owner_error": "❌ Only the room owner (creator) can invite users.",
         "invite_menu_desc": "Please select the user to invite from the menu below and click the **Confirm** button.",
         "modal_title": "Create Private Thread",
-        "modal_name_label": "Thread Name (⚠️ 1 max / Auto-delete)",
+        "modal_name_label": "Thread Name (⚠️ Auto-delete)",
         "modal_name_default": "{name}'s Thread",
         "creation_success": "✅ Private thread has been created!",
         "channel_guide_text": "🎉 {mention}'s private thread has been created!\n\n> Only you and admins can see this thread right now.\n> To chat with friends, click the **'Invite'** button below and select users.",
         "create_button": "Create Private Thread",
         "already_have_channel": "❌ You already have a private thread! Please delete or use the existing one.",
-        "notice_text": "Click the button below to create a private thread.\n\n📌 **Notice**\n• You can only create 1 thread per person.\n• The thread owner can invite other people.\n• Threads not used (based on last chat) will be deleted after **30 days**.",
+        "notice_text": "Click the button below to create a private thread.\n\n📌 **Notice**\n• Creating an abnormally large number of threads may result in sanctions.\n• The thread owner can invite other people.\n• Threads not used (based on last chat) will be deleted after **30 days**.",
         "notice_text_check": "Click the button below to create a private thread."
       },
       "zh-TW": {
@@ -106,15 +106,14 @@
         "invite_only_owner_error": "❌ 只有房主（討論串創建者）才能邀請用戶。",
         "invite_menu_desc": "請從下方選單選擇要邀請的用戶，然後點擊 **確認** 按鈕。",
         "modal_title": "創建專屬討論串",
-        "modal_name_label": "討論串名稱 (⚠️ 每人1間 / 未使用將自動刪除)",
+        "modal_name_label": "討論串名稱 (⚠️ 未使用將自動刪除)",
         "modal_name_default": "{name} 的專屬討論串",
         "creation_success": "✅ 專屬討論串已創建！",
         "channel_guide_text": "🎉 {mention} 的專屬討論串已創建！\n\n> 目前只有您和管理員可以看到此討論串。\n> 若要與朋友聊天，請點擊下方 **'邀請'** 按鈕並選擇用戶。",
         "create_button": "創建專屬討論串",
         "already_have_channel": "❌ 您已經擁有專屬討論串！請刪除或使用現有的討論串。",
-        "notice_text": "點擊下方按鈕創建專屬討論串。\n\n📌 **注意事項**\n• 每人只能創建 1 個討論串。\n• 房主可以在討論串內邀請其他人。\n• 未使用的討論串（以最後聊天為準）將在 **30天後** 刪除。",
+        "notice_text": "點擊下方按鈕創建專屬討論串。\n\n📌 **注意事項**\n• 若異常創建過多討論串，可能會成為制裁對象。\n• 房主可以在討論串內邀請其他人。\n• 未使用的討論串（以最後聊天為準）將在 **30天後** 刪除。",
         "notice_text_check": "點擊下方按鈕創建專屬討論串。"
       }
     }
   }
-}
