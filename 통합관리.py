@@ -408,31 +408,10 @@ class TextChannelCreateView(discord.ui.View):
         self.add_item(btn)
 
     async def create_callback(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-        if user_id in user_text_threads:
-            thread_id = user_text_threads[user_id]
-            try:
-                existing_thread = await interaction.guild.fetch_channel(thread_id)
-            except (discord.NotFound, discord.HTTPException):
-                existing_thread = None
-
-            if existing_thread:
-                # 보관(Archived) 상태인지 확인 후 해제
-                if getattr(existing_thread, 'archived', False):
-                    await existing_thread.edit(archived=False)
-                    if self.lang == "zh-TW":
-                        msg = f"✅ 已取消隱藏並恢復您現有的討論串 ({existing_thread.mention})。"
-                    else:
-                        msg = f"✅ Unarchived your existing thread ({existing_thread.mention})."
-                    await interaction.response.send_message(msg, ephemeral=True)
-                    return
-                else:
-                    await interaction.response.send_message(get_msg("text_config", self.lang, "already_have_channel"), ephemeral=True)
-                    return
-            else:
-                user_text_threads.pop(user_id, None)
-                text_thread_owners.pop(thread_id, None)
-                save_data()
+        # 기존에 있던 user_id in user_text_threads 검사 및 채널 중복 확인 로직 삭제 완료
+        default_fmt = get_msg("text_config", self.lang, "modal_name_default", "{name}'s Thread")
+        default_name = default_fmt.format(name=interaction.user.display_name)
+        await interaction.response.send_modal(TextThreadModal(default_name, self.lang))
 
         default_fmt = get_msg("text_config", self.lang, "modal_name_default", "{name}'s Thread")
         default_name = default_fmt.format(name=interaction.user.display_name)
