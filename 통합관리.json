@@ -1,9 +1,23 @@
 {
+  "notice_config": {
+    "webhook_url": "https://discord.com/api/webhooks/1544543154789687346/B_1pjOuPdwKWYEEeqlSMZtQvUjxNXNQVQvdf1PQ_lJgFzDiRdP_bzyB_SCrEAyL9KjlQ"
+  },
   "backup_config": {
     "delete_log_channel": "메시지-삭제-로그",
-    "image_log_channel": "이미지-백업-로그",
+    "attachment_log_channel": "첨부파일-백업-로그",
     "forum_log_channel": "포럼-백업-로그",
     "manage_log_channel": "관리-로그"
+  },
+  "attachment_config": {
+    "default_lang": "en",
+    "messages": {
+      "en": {
+        "file_size_error": "❌ {mention} Your entire message was deleted because at least one attachment exceeds 25MB. Each file must be 25MB or smaller."
+      },
+      "zh-TW": {
+        "file_size_error": "❌ {mention} 至少有一個附件超過 25MB，因此整則訊息已刪除。每個檔案大小不得超過 25MB。"
+      }
+    }
   },
   "rules_config": {
     "categories": {
@@ -23,8 +37,14 @@
       "zh-TW": "1. 歡迎來到 Guardian Maiden 官方 Discord！這是一個讓大家愉快、安全交流的空間。**請尊重他人**；嚴禁所有形式的騷擾、侮辱、仇恨言論、威脅、獵巫、歧視性言論，以及基於種族、性別、政治觀點、宗教、地區或國家的歧視。\n2. **禁止發佈不當內容**，包括色情、非法、不正當利用遊戲、非法洩漏、非法程式及違反營運政策的內容。此規則也適用於暱稱和個人資料圖片。\n3. 在貼文中提及管理員可能會被**刪除且不另行警告**。\n4. **禁止冒充其他用戶或管理員**。此規定適用於暱稱和頭像，違者將在無警告的情況下被踢出頻道。\n5. **管理員不會向您發送私訊 (DM)**，也無法接收用戶的私訊（活動中獎通知或制裁結果等特殊情況除外）。\n6. **管理員絕對不會詢問您的帳號密碼**。請努力保護您的個人資訊。\n7. Discord 活動僅透過**官方貼文註冊**進行。\n8. **禁止發佈廣告或相關連結/媒體**。這包括發佈您個人社交媒體（Discord、TikTok、YouTube、Twitch、Facebook、Twitter、Instagram 等）的連結。\n9. 本頻道發佈的媒體/連結必須與 Guardian Maiden 直接相關。**禁止重複發文和洗版**。\n10. 對遊戲或公司造成負面影響的行為可能會受到制裁。\n11. 禁止洩漏他人或其他公司的機密資訊。\n12. 如果您發現違反規則或威脅安全的行為，請透過舉報頻道進行檢舉。\n13. 請**保持對話與頻道主題相關**，並遵守現有的頻道指南。\n14. 違反伺服器規則可能會導致被**踢出或限制進入伺服器**。未列出的不當行為也可能由管理員酌情制裁。\n15. 管理員將考慮各種情況做出最終決定。嚴重偏離社會規範的行為將根據其嚴重程度進行處理。\n16. 未說明的例外情況將由管理員判斷。這是為了創造一個安全的 Discord 環境。**如果您同意，請點擊下方的確認按鈕加入 Guardian Maiden 官方 Discord！**"
     },
     "buttons": {
-      "en": { "agree": "✅ Agree", "disagree": "❌ Disagree" },
-      "zh-TW": { "agree": "✅ 同意", "disagree": "❌ 撤銷同意" }
+      "en": {
+        "agree": "✅ Agree",
+        "disagree": "❌ Disagree"
+      },
+      "zh-TW": {
+        "agree": "✅ 同意",
+        "disagree": "❌ 撤銷同意"
+      }
     },
     "messages": {
       "en": {
@@ -39,8 +59,14 @@
   },
   "voice_config": {
     "categories": {
-      "――――――― 영어 음성 채널": { "channel": "🔊영어음성채팅방-생성", "lang": "en" },
-      "――――――― 번체 음성 채널": { "channel": "🔊번체음성채팅방-생성", "lang": "zh-TW" }
+      "――――――― 영어 음성 채널": {
+        "channel": "🔊영어음성채팅방-생성",
+        "lang": "en"
+      },
+      "――――――― 번체 음성 채널": {
+        "channel": "🔊번체음성채팅방-생성",
+        "lang": "zh-TW"
+      }
     },
     "messages": {
       "en": {
@@ -77,8 +103,14 @@
   },
   "text_config": {
     "categories": {
-      "――――――― 영어 채널": { "channel": "🔒영어전용채팅방", "lang": "en" },
-      "――――――― 번체 채널": { "channel": "🔒번체전용채팅방", "lang": "zh-TW" }
+      "――――――― 영어 채널": {
+        "channel": "🔒영어전용채팅방",
+        "lang": "en"
+      },
+      "――――――― 번체 채널": {
+        "channel": "🔒번체전용채팅방",
+        "lang": "zh-TW"
+      }
     },
     "messages": {
       "en": {
@@ -135,8 +167,11 @@
       }
     }
   },
-  "string_dictionary": {
-    "Guardian Maiden": "가디언 메이든",
-    "VP": "비전 포인트"
+  "glossary": {
+    "ko": {
+      "guardian maiden": "가디언 메이든",
+      "gold": "골드",
+      "shit": "똥"
+    }
   }
 }
