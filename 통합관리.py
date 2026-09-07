@@ -49,6 +49,7 @@ text_thread_owners = {}
 web_server_started = False
 bot_initialized = False
 blocked_attachment_message_ids = set()
+sanction_counts = {}  # {유저ID: 누적 제재(추방/차단/타임아웃) 횟수} - 봇 시작 시 관리-로그 채널에서 재구성됨
 
 # 백업 워커가 1건당 1.5초 이상 걸리므로, 100건이면 최악의 경우도 몇 분 내에 소화됩니다.
 # 평소 업로드 버스트는 이 안에서 조용히 흡수하고, 진짜 비정상적으로 몰릴 때만 대기가 걸리게 하기 위한 값입니다.
@@ -123,6 +124,19 @@ def load_data():
 
 def get_msg(system_key: str, lang: str, msg_key: str, default: str = ""):
     return config.get(system_key, {}).get("messages", {}).get(lang, {}).get(msg_key, default)
+
+def format_duration_kr(delta: timedelta) -> str:
+    total_seconds = int(delta.total_seconds())
+    if total_seconds <= 0:
+        return "0분"
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    parts = []
+    if days: parts.append(f"{days}일")
+    if hours: parts.append(f"{hours}시간")
+    if minutes: parts.append(f"{minutes}분")
+    return " ".join(parts) if parts else "1분 미만"
 
 def get_channel_name(key: str, default: str) -> str:
     return config.get("backup_config", {}).get(key, default)
@@ -939,6 +953,36 @@ async def on_message_delete(message):
     except Exception:
         pass
 
+# 실제 "제재"로 취급하는 조치만 카운트 (차단해제/닉네임변경/역할제거는 제외)
+SANCTION_TITLES = {"🔨 유저 추방 (Kick)", "⛔ 유저 차단 (Ban)", "⏳ 타임아웃 적용"}
+
+async def rebuild_sanction_counts(guild):
+    """봇 시작 시 1회, 관리-로그 채널 히스토리를 훑어서 유저별 누적 제재 횟수를 메모리에 재구성한다.
+    (Render 등에서 재시작 시 로컬 파일이 초기화돼도, 로그 채널 자체가 원본 기록이라 안전하게 복구 가능)"""
+    manage_channel_name = get_channel_name("manage_log_channel", "관리-로그")
+    manage_log_channel = discord.utils.get(guild.text_channels, name=manage_channel_name)
+    if not manage_log_channel:
+        return
+
+    count = 0
+    async for msg in manage_log_channel.history(limit=None):
+        if not msg.embeds:
+            continue
+        embed = msg.embeds[0]
+        if embed.title not in SANCTION_TITLES:
+            continue
+        for field in embed.fields:
+            if field.name == "대상 유저":
+                match = re.search(r"`(\d+)`", field.value or "")
+                if match:
+                    uid = int(match.group(1))
+                    sanction_counts[uid] = sanction_counts.get(uid, 0) + 1
+                    count += 1
+                break
+
+    if count:
+        print(f"✅ [{guild.name}] 누적 제재 횟수 {count}건 재구성 완료")
+
 @bot.event
 async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     if not entry.guild:
@@ -967,6 +1011,8 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
         embed.title = "🔨 유저 추방 (Kick)"
         embed.color = discord.Color.orange()
         embed.add_field(name="작성한 제재 사유", value=reason, inline=False)
+        sanction_counts[target.id] = sanction_counts.get(target.id, 0) + 1
+        embed.add_field(name="누적 제재 횟수", value=f"{sanction_counts[target.id]}회째", inline=False)
         should_send = True
 
     # 2. 차단 (Ban)
@@ -974,6 +1020,8 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
         embed.title = "⛔ 유저 차단 (Ban)"
         embed.color = discord.Color.red()
         embed.add_field(name="작성한 제재 사유", value=reason, inline=False)
+        sanction_counts[target.id] = sanction_counts.get(target.id, 0) + 1
+        embed.add_field(name="누적 제재 횟수", value=f"{sanction_counts[target.id]}회째", inline=False)
         should_send = True
 
     # 3. 차단 해제 (Unban)
@@ -992,8 +1040,19 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
             if timeout_after is not None:
                 embed.title = "⏳ 타임아웃 적용"
                 embed.color = discord.Color.gold()
-                embed.add_field(name="설정된 타임아웃 기간 (해제 시점)", value=f"<t:{int(timeout_after.timestamp())}:F>", inline=False)
+                duration_label = format_duration_kr(timeout_after - entry.created_at)
+                embed.add_field(
+                    name="설정된 타임아웃 기간",
+                    value=(
+                        f"약 {duration_label}\n"
+                        f"해제 시점: <t:{int(timeout_after.timestamp())}:F> "
+                        f"(<t:{int(timeout_after.timestamp())}:R>)"
+                    ),
+                    inline=False
+                )
                 embed.add_field(name="작성한 제재 사유", value=reason, inline=False)
+                sanction_counts[target.id] = sanction_counts.get(target.id, 0) + 1
+                embed.add_field(name="누적 제재 횟수", value=f"{sanction_counts[target.id]}회째", inline=False)
                 should_send = True
             elif timeout_before is not None and timeout_after is None:
                 embed.title = "⌛ 타임아웃 조기 해제"
@@ -1132,6 +1191,7 @@ async def on_ready():
                 await setup_rules_channel(guild)
                 await setup_voice_channel(guild)
                 await setup_text_channel(guild)
+                await rebuild_sanction_counts(guild)
             except Exception as e: print(f"⚠️ [{guild.name}] 초기화 중 오류: {e}")
 
         bot_initialized = True
