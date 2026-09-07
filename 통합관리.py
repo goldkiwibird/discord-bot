@@ -129,14 +129,20 @@ def format_duration_kr(delta: timedelta) -> str:
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
         return "0초"
+
+    # 감사 로그 기록 지연 등으로 실제 설정값보다 몇 초 짧게 계산되는 오차를 보정하기 위해 분 단위로 반올림
+    minutes_total = round(total_seconds / 60)
+    if minutes_total == 0:
+        return f"{total_seconds}초"
+
+    total_seconds = minutes_total * 60
     days, rem = divmod(total_seconds, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, seconds = divmod(rem, 60)
+    minutes, _ = divmod(rem, 60)
     parts = []
     if days: parts.append(f"{days}일")
     if hours: parts.append(f"{hours}시간")
     if minutes: parts.append(f"{minutes}분")
-    if not parts and seconds: parts.append(f"{seconds}초")
     return " ".join(parts) if parts else "0초"
 
 def get_channel_name(key: str, default: str) -> str:
