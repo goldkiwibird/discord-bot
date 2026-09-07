@@ -1,4 +1,3 @@
 discord.py
 aiohttp
 beautifulsoup4
-deep-translator
