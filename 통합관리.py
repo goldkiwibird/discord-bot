@@ -128,15 +128,16 @@ def get_msg(system_key: str, lang: str, msg_key: str, default: str = ""):
 def format_duration_kr(delta: timedelta) -> str:
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
-        return "0분"
+        return "0초"
     days, rem = divmod(total_seconds, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, _ = divmod(rem, 60)
+    minutes, seconds = divmod(rem, 60)
     parts = []
     if days: parts.append(f"{days}일")
     if hours: parts.append(f"{hours}시간")
     if minutes: parts.append(f"{minutes}분")
-    return " ".join(parts) if parts else "1분 미만"
+    if not parts and seconds: parts.append(f"{seconds}초")
+    return " ".join(parts) if parts else "0초"
 
 def get_channel_name(key: str, default: str) -> str:
     return config.get("backup_config", {}).get(key, default)
@@ -1003,7 +1004,11 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     embed = discord.Embed(timestamp=discord.utils.utcnow())
     embed.set_author(name=f"처리한 관리자: {moderator.display_name}", icon_url=moderator.display_avatar.url if moderator.display_avatar else None)
     
-    target_display = f"{target} (`{target.id}`)" if hasattr(target, 'id') else str(target)
+    if hasattr(target, 'id'):
+        target_mention = target.mention if hasattr(target, 'mention') else f"<@{target.id}>"
+        target_display = f"{target_mention} (`{target.id}`)"
+    else:
+        target_display = str(target)
     embed.add_field(name="대상 유저", value=target_display, inline=False)
     
     # 1. 추방 (Kick)
