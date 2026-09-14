@@ -7,19 +7,68 @@
 <style>
   :root {
     --bg: #1b1d24; --panel: #23262f; --line: #343845; --text: #e7e9ee; --dim: #9aa0ae;
-    --accent: #5865f2; --ok: #3ba55d; --bad: #ed4245;
+    --accent: #5865f2; --view: #2dd4bf; --ok: #3ba55d; --bad: #ed4245;
     --R: #8b96a5; --Rplus: #4fa3c7; --SR: #c9a227; --SSR: #b562d6;
   }
   * { box-sizing: border-box; }
+  /* .grid{display:grid} / .history{display:flex} 같은 클래스 선택자가 브라우저 기본 [hidden]
+     스타일(display:none)보다 우선순위가 높아서, !important 없이는 숨겨지지 않는다. */
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font-family: "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif; }
   header { position: sticky; top: 0; z-index: 10; background: var(--panel);
            border-bottom: 1px solid var(--line); padding: 12px 16px; }
-  h1 { margin: 0 0 10px; font-size: 18px; }
+  /* 상단 화면 전환 탭 — 제목이 있던 자리. 아래 덱 탭(파란 알약)과 헷갈리지 않도록
+     밑줄형 + 다른 색(청록)으로 완전히 다르게 생기게 한다. */
+  .viewtabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .viewtab { padding: 8px 16px 10px; border: none; background: transparent; color: var(--dim);
+             cursor: pointer; font-size: 17px; font-weight: 700; border-bottom: 3px solid transparent;
+             margin-bottom: -1px; }
+  .viewtab:hover { color: var(--text); }
+  .viewtab.active { color: var(--view); border-bottom-color: var(--view); }
+
   .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
   .tab { padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; background: transparent;
          color: var(--text); cursor: pointer; font-size: 14px; }
   .tab.active { background: var(--accent); border-color: var(--accent); }
+
+  /* PVP 전적 */
+  .history { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .match { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line);
+           border-radius: 8px; padding: 10px 14px; display: flex; align-items: center;
+           gap: 12px; flex-wrap: wrap; }
+  .match.win { border-left-color: var(--ok); }
+  .match.loss { border-left-color: var(--bad); }
+  .match.draw { border-left-color: var(--dim); }
+  .match.cancelled { border-left-color: var(--line); opacity: .6; }
+  .result { font-weight: 700; font-size: 14px; min-width: 56px; }
+  .match.win .result { color: var(--ok); }
+  .match.loss .result { color: var(--bad); }
+  .match.draw .result, .match.cancelled .result { color: var(--dim); }
+  .vs { font-size: 13px; flex: 1; min-width: 120px; }
+  .vs .dim { color: var(--dim); }
+  .delta { font-size: 13px; font-weight: 600; }
+  .delta.up { color: var(--ok); } .delta.down { color: var(--bad); } .delta.flat { color: var(--dim); }
+  .when { font-size: 12px; color: var(--dim); }
+
+  /* 소환 이력 — 한 덩어리가 소환 1회(10연이면 카드 10장) */
+  .summons { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .summon { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .summon-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .summon-head .count { font-size: 13px; font-weight: 600; color: var(--text); }
+  .cost { font-size: 12px; color: var(--bad); }
+  .refund { font-size: 12px; color: var(--SR); }
+  .pulls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pull { width: 72px; }
+  .pull img { width: 72px; aspect-ratio: 402 / 591; object-fit: cover; object-position: top center;
+              border-radius: 6px; background: #14161b; display: block; border: 2px solid var(--line); }
+  .pull.new img { border-color: var(--ok); }
+  .pull .pname { font-size: 10px; color: var(--dim); margin-top: 3px;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pull .tag { font-size: 9px; padding: 1px 5px; border-radius: 8px; border: 1px solid var(--line);
+               color: var(--dim); display: inline-block; margin-top: 2px; }
+  .pull.new .tag { color: var(--ok); border-color: var(--ok); }
+  .pull.maxed .tag { color: var(--SR); border-color: var(--SR); }
   .statusbar { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
   .count { font-size: 14px; color: var(--dim); }
   button.action { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer;
@@ -66,16 +115,20 @@
 </head>
 <body>
 <header>
-  <h1 id="title">Deck</h1>
-  <div class="tabs" id="tabs"></div>
-  <div class="statusbar">
-    <span class="count" id="count"></span>
-    <button class="action" id="save" disabled></button>
-    <span id="toast"></span>
+  <div class="viewtabs" id="viewtabs"></div>
+  <div id="deckControls">
+    <div class="tabs" id="tabs"></div>
+    <div class="statusbar">
+      <span class="count" id="count"></span>
+      <button class="action" id="save" disabled></button>
+      <span id="toast"></span>
+    </div>
+    <div class="filters" id="filters"></div>
   </div>
-  <div class="filters" id="filters"></div>
 </header>
 <div class="grid" id="grid"></div>
+<div class="history" id="history" hidden></div>
+<div class="summons" id="summons" hidden></div>
 
 <script>
 const token = new URLSearchParams(location.search).get("token");
@@ -103,10 +156,144 @@ async function load() {
   data = await res.json();
 
   document.title = data.messages.web_title;
-  $("title").textContent = data.messages.web_title;
   $("save").textContent = data.messages.web_save;
+  renderViewTabs();
   renderFilters();
   selectDeck(1);
+}
+
+// ── 화면 전환 (덱 설정 / PVP 전적) ────────────────────────────────
+let view = "deck";
+let history = null;   // null이면 아직 안 불러온 상태
+let summons = null;
+
+function renderViewTabs() {
+  const box = $("viewtabs");
+  box.innerHTML = "";
+  for (const [key, label] of [["deck", data.messages.web_tab_deck],
+                              ["history", data.messages.web_tab_history],
+                              ["summons", data.messages.web_tab_summons]]) {
+    const btn = document.createElement("button");
+    btn.className = "viewtab" + (key === view ? " active" : "");
+    btn.textContent = label;
+    btn.onclick = () => selectView(key);
+    box.appendChild(btn);
+  }
+}
+
+function selectView(next) {
+  view = next;
+  renderViewTabs();
+  $("deckControls").hidden = view !== "deck";
+  $("grid").hidden = view !== "deck";
+  $("history").hidden = view !== "history";
+  $("summons").hidden = view !== "summons";
+  // 각 이력은 탭을 처음 열 때만 받아온다 — 덱만 보고 나가는 사람에게는 조회 비용이 0
+  if (view === "history" && history === null) loadHistory();
+  if (view === "summons" && summons === null) loadSummons();
+}
+
+async function loadHistory() {
+  $("history").innerHTML = `<div class="empty">${data.messages.web_history_loading}</div>`;
+  const res = await fetch(`/api/history?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    $("history").innerHTML = `<div class="empty">${data.messages.web_expired || "Link expired."}</div>`;
+    return;
+  }
+  history = (await res.json()).matches;
+  renderHistory();
+}
+
+function renderHistory() {
+  const box = $("history");
+  box.innerHTML = "";
+  if (!history.length) {
+    box.innerHTML = `<div class="empty">${data.messages.web_history_empty}</div>`;
+    return;
+  }
+  const labels = {
+    win: data.messages.web_result_win, loss: data.messages.web_result_loss,
+    draw: data.messages.web_result_draw, cancelled: data.messages.web_result_cancelled,
+  };
+  for (const m of history) {
+    const el = document.createElement("div");
+    el.className = "match " + m.result;
+
+    const name = m.opponent_name || data.messages.web_history_unknown;
+    // 판돈전만 득실을 보여준다. 친선전은 0이 아니라 '친선전'이라고 적어야 오해가 없다.
+    let delta = `<span class="delta flat">${data.messages.web_history_friendly}</span>`;
+    if (m.wager > 0) {
+      const cls = m.delta > 0 ? "up" : m.delta < 0 ? "down" : "flat";
+      const sign = m.delta > 0 ? "+" : "";
+      delta = `<span class="delta ${cls}">${sign}${m.delta.toLocaleString()}P</span>`;
+    }
+
+    el.innerHTML =
+      `<span class="result">${labels[m.result]}</span>` +
+      `<span class="vs"><span class="dim">${data.messages.web_history_opponent}</span> ${escapeHtml(name)}</span>` +
+      delta +
+      `<span class="when">${new Date(m.played_at).toLocaleString()}</span>`;
+    box.appendChild(el);
+  }
+}
+
+async function loadSummons() {
+  $("summons").innerHTML = `<div class="empty">${data.messages.web_history_loading}</div>`;
+  const res = await fetch(`/api/summons?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    $("summons").innerHTML = `<div class="empty">${data.messages.web_expired}</div>`;
+    return;
+  }
+  summons = (await res.json()).summons;
+  renderSummons();
+}
+
+function renderSummons() {
+  const box = $("summons");
+  box.innerHTML = "";
+  if (!summons.length) {
+    box.innerHTML = `<div class="empty">${data.messages.web_summons_empty}</div>`;
+    return;
+  }
+  const tags = {
+    new: data.messages.web_summon_new,
+    enhance: data.messages.web_summon_enhance,
+    maxed: data.messages.web_summon_maxed,
+  };
+  for (const s of summons) {
+    const el = document.createElement("div");
+    el.className = "summon";
+
+    // 소환 1회가 카드 여러 장을 담는다 (10연이면 10장) — 한 덩어리로 묶어서 보여준다
+    const pulls = s.cards.map(c => {
+      const img = `${data.image_base_url}hero/${encodeURIComponent(c.image_name)}.png`;
+      return `<div class="pull ${c.outcome}">` +
+             `<img src="${img}" alt="" loading="lazy">` +
+             `<div class="pname">${escapeHtml(c.name)}</div>` +
+             `<span class="tag">${tags[c.outcome] || c.outcome}</span></div>`;
+    }).join("");
+
+    const cost = s.cost
+      ? `<span class="cost">${msg("web_summon_cost", { points: s.cost.toLocaleString() })}</span>` : "";
+    // 중복이라 포인트로 돌려받은 경우에만 환급액을 적는다
+    const refund = s.refund
+      ? `<span class="refund">${msg("web_summon_refund", { points: s.refund.toLocaleString() })}</span>` : "";
+
+    el.innerHTML =
+      `<div class="summon-head">` +
+      `<span class="count">${msg("web_summon_count", { count: s.cards.length })}</span>` +
+      cost + refund +
+      `<span class="when" style="margin-left:auto">${new Date(s.pulled_at).toLocaleString()}</span>` +
+      `</div><div class="pulls">${pulls}</div>`;
+    box.appendChild(el);
+  }
+}
+
+// 상대 이름은 디스코드 표시 이름이라 무엇이든 들어올 수 있다 — 반드시 이스케이프해서 넣는다
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 function renderFilters() {
