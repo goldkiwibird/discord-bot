@@ -9,6 +9,9 @@ from aiohttp import web
 from bs4 import BeautifulSoup
 import discord
 from discord.ext import commands, tasks
+from dotenv import load_dotenv
+
+load_dotenv()  # 로컬에 .env 파일이 있으면 읽어서 환경변수로 등록 (Render 등 배포 환경에선 .env가 없어도 무시되고 실제 환경변수를 씀)
 
 # ---------------------------------------------------------
 # 기본 설정 및 변수
@@ -1218,5 +1221,8 @@ async def on_voice_state_update(member, before, after):
         voice_empty_tasks[after.channel.id].cancel()
         voice_empty_tasks.pop(after.channel.id, None)
 
-TOKEN = os.getenv("BOT_TOKEN", "")
-bot.run(TOKEN)
+if __name__ == "__main__":
+    # 토큰은 환경변수로만 받는다. 기본값을 두면 그 값이 소스에 평문으로 남아(공개 저장소라 더 위험하고),
+    # 값이 없을 때도 빈 문자열로 조용히 로그인 시도를 해서 원인 파악이 어려워진다.
+    # 이 가드가 있어야 다른 스크립트에서 import해 로직만 볼 때 실수로 디스코드에 접속하지 않는다.
+    bot.run(os.environ["BOT_TOKEN"])
