@@ -88,8 +88,6 @@
           overflow: hidden; cursor: pointer; position: relative; transition: border-color .12s, transform .12s; }
   .card:hover { transform: translateY(-2px); }
   .card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,101,242,.35); }
-  .card.locked { opacity: .38; cursor: not-allowed; }
-  .card.locked:hover { transform: none; }
   /* 카드 그림 = 일러스트 + 직업/속성 아이콘.
      등급 프레임(512x768 PNG 4장, 합계 2.27MB)은 일부러 안 쓴다 — 화면 표시 크기가 100px대라
      들이는 용량 대비 얻는 게 적다. 아이콘 2종은 합쳐서 0.11MB뿐이고 종류가 고정(6+6)이라
@@ -109,8 +107,10 @@
           background: var(--accent); color: #fff; font-size: 12px; display: none;
           align-items: center; justify-content: center; }
   .card.selected .pick { display: flex; }
-  .lockmsg { position: absolute; top: 6px; right: 6px; font-size: 10px; background: rgba(0,0,0,.7);
-             padding: 3px 6px; border-radius: 4px; color: var(--dim); }
+  /* 다른 덱에도 들어 있다는 안내. 예전에는 잠금 표시였지만 이제 막지 않고 알려주기만 한다.
+     오른쪽 위는 선택 번호(.pick)가 쓰므로 왼쪽 아래에 둔다. */
+  .alsomsg { position: absolute; bottom: 6px; left: 6px; font-size: 10px; background: rgba(0,0,0,.72);
+             padding: 3px 6px; border-radius: 4px; color: var(--SR); }
   .info { padding: 8px; }
   .name { font-size: 13px; font-weight: 600; margin-bottom: 6px;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -370,7 +370,7 @@ function visibleCards() {
 function selectDeck(number) {
   currentDeck = number;
   // 이 덱에 이미 배치된 카드를 초기 선택 상태로
-  selected = data.cards.filter(c => c.deck_number === number).map(c => c.hero_id);
+  selected = data.cards.filter(c => c.deck_numbers.includes(number)).map(c => c.hero_id);
   render();
 }
 
@@ -405,11 +405,12 @@ function render() {
 
   for (const card of cards) {
     // 다른 덱에 배치된 카드는 이 덱에서 못 고름 (같은 카드는 덱 하나에만)
-    const lockedIn = card.deck_number && card.deck_number !== currentDeck ? card.deck_number : null;
+    // 같은 카드를 여러 덱에 넣을 수 있으므로 잠그지 않는다. 다른 덱에도 들어 있으면 그 번호만 알려준다.
+    const alsoIn = card.deck_numbers.filter(n => n !== currentDeck);
     const isSelected = selected.includes(card.hero_id);
 
     const el = document.createElement("div");
-    el.className = "card" + (isSelected ? " selected" : "") + (lockedIn ? " locked" : "");
+    el.className = "card" + (isSelected ? " selected" : "");
 
     const statsHtml = data.stat_order.map(key => {
       const gained = card.bonus[key];
@@ -422,8 +423,8 @@ function render() {
     el.innerHTML = `
       ${cardArt(card)}
       <span class="grade" style="background: var(${GRADE_COLOR[card.grade] || "--R"})">${card.grade}</span>
-      ${lockedIn ? `<span class="lockmsg">${msg("web_in_other_deck", { number: lockedIn })}</span>`
-                 : `<span class="pick">${selected.indexOf(card.hero_id) + 1}</span>`}
+      ${alsoIn.length ? `<span class="alsomsg">${msg("web_in_other_deck", { number: alsoIn.join(", ") })}</span>` : ""}
+      <span class="pick">${selected.indexOf(card.hero_id) + 1}</span>
       <div class="info">
         <div class="name">${card.name}</div>
         <div class="stats">${statsHtml}</div>
@@ -431,7 +432,7 @@ function render() {
           ? `<button type="button" class="reset-btn">${data.messages.web_reset_enhance}</button>` : ""}
       </div>`;
 
-    if (!lockedIn) el.onclick = () => toggle(card.hero_id);
+    el.onclick = () => toggle(card.hero_id);
     const resetBtn = el.querySelector(".reset-btn");
     if (resetBtn) resetBtn.onclick = (e) => { e.stopPropagation(); resetEnhance(card.hero_id); };
     grid.appendChild(el);
@@ -478,8 +479,8 @@ $("save").onclick = async () => {
 
   // 저장된 배치를 화면 데이터에도 반영 (다른 덱 탭에서 잠금 표시가 정확해지도록)
   for (const card of data.cards) {
-    if (card.deck_number === currentDeck) card.deck_number = null;
-    if (selected.includes(card.hero_id)) card.deck_number = currentDeck;
+    card.deck_numbers = card.deck_numbers.filter(n => n !== currentDeck);
+    if (selected.includes(card.hero_id)) card.deck_numbers = [...card.deck_numbers, currentDeck].sort();
   }
   toast(data.messages.web_saved, "ok");
   render();
