@@ -152,8 +152,26 @@ async def ensure_schema(conn):
             slot INT NOT NULL,
             hero_id INT NOT NULL,
             PRIMARY KEY (user_id, deck_number, slot),
-            UNIQUE (user_id, hero_id)
+            -- 같은 카드를 여러 덱에 넣는 건 허용하고, **한 덱 안에서의 중복만** 막는다.
+            -- 예전에는 UNIQUE (user_id, hero_id)라 1덱에 넣은 카드를 2덱에 못 넣었다.
+            UNIQUE (user_id, deck_number, hero_id)
         )
+    """)
+    # 이미 만들어진 테이블에는 위 CREATE가 적용되지 않으므로 제약을 갈아끼운다.
+    # 제약을 푸는 방향이라 기존 데이터는 그대로 유효하다(데이터 삭제/이동 없음).
+    # 되돌리려면 덱 간 중복을 먼저 정리해야 옛 제약을 다시 걸 수 있다.
+    await conn.execute("""
+        DO $$
+        BEGIN
+            ALTER TABLE user_decks DROP CONSTRAINT IF EXISTS user_decks_user_id_hero_id_key;
+            BEGIN
+                ALTER TABLE user_decks
+                    ADD CONSTRAINT user_decks_user_id_deck_number_hero_id_key
+                    UNIQUE (user_id, deck_number, hero_id);
+            EXCEPTION WHEN duplicate_table OR duplicate_object THEN
+                NULL;   -- 이미 걸려 있으면 그대로 둔다 (재시작마다 안전하게 반복 실행)
+            END;
+        END $$;
     """)
     # PVP는 대결마다 어느 덱을 쓸지 그때그때 고르는 방식으로 가기로 해서
     # "현재 사용 중인 덱"이라는 고정 개념 자체가 필요 없어졌다 — 예전에 추가했던 컬럼 정리.
@@ -727,7 +745,8 @@ def validate_deck(hero_ids: list, owned_ids: set, deck_number: int) -> str | Non
     """덱 저장 요청을 검증한다. 문제가 없으면 None, 있으면 사유 문자열을 돌려준다.
 
     브라우저에서 오는 요청이라 클라이언트 검증은 우회될 수 있다 — 저장 직전에 서버가 다시 확인한다.
-    (덱 간 카드 중복은 user_decks의 UNIQUE 제약이 최종적으로 막지만, 사용자에게 이유를 알려주려면 여기서도 확인)
+    한 덱 안에서 같은 카드를 두 번 넣는 것만 막는다 — 1덱에 넣은 카드를 2덱에 넣는 건 허용한다.
+    (DB의 UNIQUE (user_id, deck_number, hero_id)가 최종적으로 막지만, 사용자에게 이유를 알려주려면 여기서도 확인)
     """
     deck_conf = config["deck_config"]
     if not (1 <= deck_number <= deck_conf["deck_count"]):
@@ -748,10 +767,12 @@ async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
                c.bonus_attack, c.bonus_hp, c.bonus_defense, c.bonus_accuracy, c.bonus_evasion,
                h.name, h.name_en, h.name_zh_tw, h.grade, h.job, h.element,
                h.attack, h.hp, h.defense, h.accuracy, h.evasion,
-               d.deck_number
+               COALESCE((SELECT array_agg(d.deck_number ORDER BY d.deck_number)
+                         FROM user_decks d
+                         WHERE d.user_id = c.user_id AND d.hero_id = c.hero_id),
+                        '{}') AS deck_numbers
         FROM user_cards c
         JOIN hero_base_stats h ON h.id = c.hero_id
-        LEFT JOIN user_decks d ON d.user_id = c.user_id AND d.hero_id = c.hero_id
         WHERE c.user_id = $1
         ORDER BY h.grade, h.id
         """,
@@ -773,7 +794,9 @@ async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
             "stats": {key: row[key] + bonus[key] for key in STAT_KEYS},
             "bonus": bonus,
             "enhance_count": row["enhance_count"],
-            "deck_number": row["deck_number"],
+            # 같은 카드가 여러 덱에 들어갈 수 있으므로 목록으로 내려준다.
+            # LEFT JOIN으로 두면 덱 수만큼 행이 늘어나 같은 카드가 화면에 여러 번 뜬다.
+            "deck_numbers": list(row["deck_numbers"]),
         })
 
     return {"cards": cards}
@@ -923,14 +946,8 @@ async def save_deck(conn, user_id: int, deck_number: int, hero_ids: list) -> str
         if reason:
             return reason
 
-        # 다른 덱에 이미 들어간 카드인지 확인 (같은 카드는 덱 하나에만 배치 가능)
-        conflict = await conn.fetchval(
-            "SELECT deck_number FROM user_decks WHERE user_id = $1 AND hero_id = ANY($2::int[]) AND deck_number <> $3",
-            user_id, hero_ids, deck_number,
-        )
-        if conflict is not None:
-            return "in_other_deck"
-
+        # 다른 덱에 이미 들어간 카드여도 상관없다 — 덱 간 중복은 허용하고
+        # 한 덱 안에서의 중복만 막는다(validate_deck의 duplicate_in_deck + DB의 UNIQUE 제약).
         await conn.execute("DELETE FROM user_decks WHERE user_id = $1 AND deck_number = $2", user_id, deck_number)
         await conn.executemany(
             "INSERT INTO user_decks (user_id, deck_number, slot, hero_id) VALUES ($1, $2, $3, $4)",
