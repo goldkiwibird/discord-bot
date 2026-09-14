@@ -83,6 +83,9 @@ class CardRenderer:
         self.image_base_url = (card_config.get("image_base_url") or "").rstrip("/")
         self._asset_timeout = card_config.get("asset_fetch_timeout_seconds", 10)
         self._user_agent = card_config.get("asset_user_agent", "arcade-discord-bot/1.0")
+        # 에셋 확장자. PNG -> WebP로 갈아탄 뒤에도 한 줄로 되돌릴 수 있게 설정으로 둔다
+        # (같은 해상도에서 용량이 83% 줄었다: 18.5MB -> 3.1MB, 알파는 그대로).
+        self.image_ext = card_config.get("image_ext", ".webp")
         # 원본 에셋 캐시. 버킷에서 받는 경우 재조회가 네트워크 왕복이라 캐시가 더 중요해진다.
         # LRU 갱신(순서 이동+삭제)이 들어가므로 베이스 카드 캐시와 같은 이유로 락이 필요하다.
         self._portrait_limit = card_config.get("portrait_cache_size", 80)
@@ -195,11 +198,11 @@ class CardRenderer:
     # --- 베이스 카드 (캐릭터별 1회 생성 후 캐시) ----------------------
 
     def _build_base_card(self, card: CardData) -> Image.Image:
-        canvas = self._load("card", f"{card.grade}.png").copy()
+        canvas = self._load("card", f"{card.grade}{self.image_ext}").copy()
 
         # 캐릭터 일러스트: 비율을 유지한 채 일러스트 영역 안에 다 들어가도록 맞추고 가운데 정렬
         px0, py0, px1, py1 = self.config["portrait_box"]
-        source = self._load("hero", f"{card.name}.png")
+        source = self._load("hero", f"{card.name}{self.image_ext}")
         scale = min((px1 - px0) / source.width, (py1 - py0) / source.height)
         portrait = source.resize((round(source.width * scale), round(source.height * scale)), Image.LANCZOS)
         canvas.alpha_composite(
@@ -207,23 +210,30 @@ class CardRenderer:
             (px0 + (px1 - px0 - portrait.width) // 2, py0 + (py1 - py0 - portrait.height) // 2),
         )
 
-        # 직업 아이콘: 프레임 우상단의 빈 원 안에 배치
-        icon_size = self.config["job_icon_size"]
-        job_icon = self._load("job_icon", f"{card.job}.png", size=(icon_size, icon_size))
+        # 직업 아이콘: 프레임 우상단의 빈 원 안에, PNG 원본 크기 그대로 배치.
+        # 예전에는 직업/속성을 똑같이 job_icon_size(52) 정사각형으로 줄여 붙였는데, 아이콘마다
+        # PNG 안쪽 여백이 달라서(직업은 여백 0, 속성은 사방 3px) 같은 칸에 넣어도 속성만
+        # 지름 4px 작게 보였다. 크기는 아이콘 파일 자체로 정한다 — 설정값으로 늘리고 줄이지 않는다.
+        job_icon = self._load("job_icon", f"{card.job}{self.image_ext}")
         cx, cy = self.config["job_icon_center"]
-        canvas.alpha_composite(job_icon, (cx - icon_size // 2, cy - icon_size // 2))
+        canvas.alpha_composite(job_icon, (cx - job_icon.width // 2, cy - job_icon.height // 2))
 
-        # 속성 아이콘: 직업 아이콘을 카드 세로 중심선에 대해 뒤집은 자리에 같은 크기로 배치.
+        # 속성 아이콘: 직업 아이콘을 카드 세로 중심선에 대해 뒤집은 자리에 배치.
         # 좌표를 별도 설정값으로 두면 직업 아이콘 위치를 조정할 때 대칭이 깨지므로 항상 계산한다.
+        # 두 아이콘의 크기가 서로 달라도 되도록, 뒤집는 건 좌표가 아니라 중심점이다.
         if card.element:
-            element_icon = self._load("element", f"{card.element}.png", size=(icon_size, icon_size))
-            canvas.alpha_composite(element_icon, (canvas.width - cx - icon_size // 2, cy - icon_size // 2))
+            element_icon = self._load("element", f"{card.element}{self.image_ext}")
+            element_cx = canvas.width - cx
+            canvas.alpha_composite(
+                element_icon,
+                (element_cx - element_icon.width // 2, cy - element_icon.height // 2),
+            )
 
         # 스탯 아이콘: 유저마다 달라지는 건 옆에 적힐 숫자뿐이고 아이콘 자체는 항상 같으므로
         # (캐릭터 무관, 언어 무관) 베이스 카드에 미리 구워넣는다 — render_card()는 숫자만 그리면 됨
         stat_icon_size = self.config["stat_icon_size"]
         for stat_key, icon_x, center_y in self._stat_layout():
-            icon = self._load("stat_icon", f"{stat_key}.png", size=(stat_icon_size, stat_icon_size))
+            icon = self._load("stat_icon", f"{stat_key}{self.image_ext}", size=(stat_icon_size, stat_icon_size))
             canvas.alpha_composite(icon, (icon_x, round(center_y - stat_icon_size / 2)))
 
         # 캐릭터 이름: 상단 패널 가운데. 이름이 길면 패널을 넘지 않도록 폰트를 줄인다.
