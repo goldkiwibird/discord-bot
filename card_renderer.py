@@ -319,6 +319,51 @@ class CardRenderer:
             sheet.alpha_composite(thumb, (col * (card_width + gap), row * (cell_h + gap)))
         return sheet
 
+    def render_rows(self, cards: list[CardData], row_sizes: list[int] | None = None,
+                    card_width: int | None = None) -> Image.Image:
+        """카드를 줄마다 다른 장수로 나눠 가운데 정렬해 한 장으로 합친다 (PVP 덱 공개 등).
+
+        `render_grid`처럼 칸 수를 하나로 고정하면 5장이 한 줄로 길게 늘어서서, 디스코드가
+        가로 폭에 맞춰 축소하는 바람에 카드 하나하나가 작게 보인다. 줄당 장수를 따로 주면
+        (예: `[2, 3]`) 전체 비율이 정사각형에 가까워져서 같은 폭 안에서 카드를 훨씬 크게 띄울 수 있다.
+
+        `row_sizes`로 다 못 채우고 카드가 남으면 마지막 줄 장수로 계속 이어 붙인다
+        (덱 크기를 나중에 바꿔도 설정을 안 고쳐 이미지가 잘리는 일이 없도록).
+        """
+        row_sizes = row_sizes or self.config["deck_reveal_rows"]
+        card_width = card_width or self.config["deck_reveal_card_width"]
+        gap = 12
+
+        thumbs = []
+        for card in cards:
+            full = self.render_card(card)
+            scale = card_width / full.width
+            thumbs.append(full.resize((card_width, round(full.height * scale)), Image.LANCZOS))
+        if not thumbs:
+            return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+
+        pending = [size for size in row_sizes if size > 0] or [len(thumbs)]
+        rows: list[list[Image.Image]] = []
+        remaining = list(thumbs)
+        while remaining:
+            size = pending[0] if len(pending) == 1 else pending.pop(0)
+            rows.append(remaining[:size])
+            del remaining[:size]
+
+        cell_h = max(t.height for t in thumbs)
+        widths = [len(row) * card_width + (len(row) - 1) * gap for row in rows]
+        sheet = Image.new(
+            "RGBA",
+            (max(widths), len(rows) * cell_h + (len(rows) - 1) * gap),
+            (0, 0, 0, 0),
+        )
+        for row_index, row in enumerate(rows):
+            x = (sheet.width - widths[row_index]) // 2  # 줄마다 장수가 달라 가운데로 맞춘다
+            for thumb in row:
+                sheet.alpha_composite(thumb, (x, row_index * (cell_h + gap)))
+                x += card_width + gap
+        return sheet
+
     def render_matchup(self, left: CardData, left_value: int, right: CardData, right_value: int) -> Image.Image:
         """PVP 라운드 결과: 내 카드와 상대 카드를 나란히 놓고 그 사이에 판정에 쓰인 스탯값을 적는다."""
         card_width = self.config["grid_card_width"]
