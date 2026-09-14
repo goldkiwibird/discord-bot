@@ -1,6 +1,7 @@
 {
   "checkin_config": {
-    "daily_points": 100
+    "daily_points": 100,
+    "first_time_points": 1000
   },
   "deck_config": {
     "deck_count": 3,
@@ -74,7 +75,8 @@
   },
   "web_config": {
     "base_url": "",
-    "token_ttl_seconds": 600
+    "token_ttl_seconds": 600,
+    "health_db_timeout_seconds": 3
   },
   "category_language_config": {
     "――――――― 영어 채널": "en-US",
@@ -163,6 +165,11 @@
     ],
     "grid_columns": 5,
     "grid_card_width": 300,
+    "deck_reveal_rows": [
+      2,
+      3
+    ],
+    "deck_reveal_card_width": 420,
     "matchup_gap": 100,
     "matchup_text_padding": 28,
     "matchup_value_font_size": 44
@@ -250,6 +257,7 @@
     "en-US": {
       "checkin_success_title": "✅ Check-in complete",
       "checkin_success_desc": "You received {points} points!",
+      "checkin_first_time_desc": "🎉 Welcome! First check-in bonus: {points} points!",
       "checkin_points_label": "Current points",
       "checkin_streak_label": "Check-in streak",
       "checkin_streak_value": "{streak} day(s)",
@@ -348,6 +356,7 @@
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
       "checkin_success_desc": "{points}포인트를 받았습니다!",
+      "checkin_first_time_desc": "🎉 첫 출석을 환영합니다! 신규 보너스로 {points}포인트를 받았습니다!",
       "checkin_points_label": "현재 보유 포인트",
       "checkin_streak_label": "연속 출석",
       "checkin_streak_value": "{streak}일째",
@@ -446,6 +455,7 @@
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
       "checkin_success_desc": "獲得了 {points} 點數！",
+      "checkin_first_time_desc": "🎉 歡迎！首次簽到獎勵 {points} 點數！",
       "checkin_points_label": "目前持有點數",
       "checkin_streak_label": "連續簽到",
       "checkin_streak_value": "第 {streak} 天",
