@@ -163,6 +163,23 @@ async def ensure_schema(conn):
     # "판돈을 누구에게서 얼마나 미리 빼뒀는지"만 남긴다. 봇이 매치 도중에 재시작되면
     # 이 기록을 보고 묶여 있던 판돈을 돌려줘야 하기 때문 (그게 없으면 포인트가 증발한다).
     await conn.execute("""
+        -- 소환 1회를 1행에 담는다 (10연도 1행). 카드 1장당 1행으로 쌓으면 같은 카드 수를
+        -- 저장하는 데 4배가 든다 (실측: 카드당 135.5B -> 33.9B). 행 하나하나의 고정 오버헤드
+        -- (헤더 + 인덱스 엔트리)가 실제 데이터보다 크기 때문이다.
+        CREATE TABLE IF NOT EXISTS summon_log (
+            log_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            hero_ids INT[] NOT NULL,
+            outcomes TEXT[] NOT NULL,
+            refund INT NOT NULL DEFAULT 0,
+            cost INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS summon_log_user_idx ON summon_log (user_id, log_id DESC)
+    """)
+    await conn.execute("""
         CREATE TABLE IF NOT EXISTS pvp_matches (
             match_id BIGSERIAL PRIMARY KEY,
             challenger_id BIGINT NOT NULL,
@@ -403,6 +420,32 @@ async def run_summon(user_id: int, count: int, cost: int) -> tuple[list[dict] | 
                         for hero_id in changed
                     ],
                 )
+
+            # 소환 이력 기록. 소환 1회 = 1행이고 뽑은 카드는 배열에 담는다(10연도 1행).
+            # 카드 지급과 같은 트랜잭션 안에 둬야 "지급됐는데 이력엔 없다"가 생기지 않는다.
+            await conn.execute(
+                """INSERT INTO summon_log (user_id, hero_ids, outcomes, refund, cost)
+                   VALUES ($1, $2, $3, $4, $5)""",
+                user_id,
+                [o["hero"]["id"] for o in outcomes],
+                [o["type"] for o in outcomes],
+                refund, cost,
+            )
+            # 유저당 최근 N회만 남긴다. 상한을 두면 **운영 기간과 무관하게** 용량이 유저당
+            # 고정(20회 = 약 6.6KB)되어 Neon 무료 한도 0.5GB를 넘길 일이 없다
+            # (넘기면 INSERT/UPDATE/DELETE가 전부 막혀 봇 전체가 멈춘다).
+            # 별도 스케줄러 없이 소환할 때마다 조금씩 정리하는 방식.
+            keep = config["summon_config"].get("log_keep_per_user", 20)
+            await conn.execute(
+                """
+                DELETE FROM summon_log
+                WHERE user_id = $1 AND log_id <= (
+                    SELECT log_id FROM summon_log
+                    WHERE user_id = $1 ORDER BY log_id DESC OFFSET $2 LIMIT 1
+                )
+                """,
+                user_id, keep,
+            )
 
             points = spent["points"]
             if refund:
@@ -703,6 +746,103 @@ async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
 
     return {"cards": cards}
 
+async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> list[dict]:
+    """소환 이력. 최근 것부터 `limit`건 (1건 = 소환 1회, 10연이면 카드 10장이 한 건에 들어 있음).
+
+    영웅 이름/등급은 로그에 복사해 넣지 않고 `hero_base_stats`에서 조회한다 — 복사해 두면
+    나중에 마스터 데이터를 고쳤을 때 과거 기록만 옛 값으로 남아 어긋난다.
+    `bot.heroes_by_grade`(메모리 로스터)를 쓰지 않는 이유는 봇이 켜진 상태에만 의존하게 되어
+    조회 함수를 단독으로 검증할 수 없고, 로스터가 비어 있으면 카드가 조용히 사라지기 때문이다.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT log_id, hero_ids, outcomes, refund, cost, created_at
+        FROM summon_log
+        WHERE user_id = $1
+        ORDER BY log_id DESC
+        LIMIT $2
+        """,
+        user_id, limit,
+    )
+    if not rows:
+        return []
+
+    # 등장한 영웅만 한 번에 조회해서 id -> 정보로 만든다 (행마다 조인하지 않도록)
+    hero_ids = {hero_id for row in rows for hero_id in row["hero_ids"]}
+    heroes = {
+        hero["id"]: dict(hero)
+        for hero in await conn.fetch(
+            "SELECT id, name, name_en, name_zh_tw, grade FROM hero_base_stats WHERE id = ANY($1::int[])",
+            list(hero_ids),
+        )
+    }
+
+    history = []
+    for row in rows:
+        cards = []
+        for hero_id, outcome in zip(row["hero_ids"], row["outcomes"]):
+            hero = heroes.get(hero_id)
+            if hero is None:      # 마스터 데이터에서 빠진 영웅 — 이름을 못 찾아도 기록은 보여준다
+                cards.append({"name": f"#{hero_id}", "image_name": "", "grade": "R", "outcome": outcome})
+                continue
+            cards.append({
+                "name": hero_display_name(hero, lang),
+                "image_name": hero["name"],   # 이미지 파일명은 항상 한글 원본
+                "grade": hero["grade"],
+                "outcome": outcome,           # new / enhance / maxed
+            })
+        history.append({
+            "log_id": row["log_id"],
+            "cards": cards,
+            "refund": row["refund"],
+            "cost": row["cost"],
+            "pulled_at": row["created_at"].isoformat(),
+        })
+    return history
+
+async def fetch_match_history(conn, user_id: int, limit: int) -> list[dict]:
+    """PVP 전적. 최근 것부터 `limit`건.
+
+    `pvp_matches`에 이미 쌓여 있어서 새 테이블이 필요 없다. 상대 이름은 DB에 없고(디스코드에만 있음)
+    봇이 캐시에서 못 찾을 수도 있으므로, 이름 해석은 이 함수가 아니라 호출하는 쪽에 맡긴다.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT match_id, challenger_id, opponent_id, wager, status, winner_id, created_at
+        FROM pvp_matches
+        WHERE (challenger_id = $1 OR opponent_id = $1)
+          AND status <> 'pending'
+        ORDER BY match_id DESC
+        LIMIT $2
+        """,
+        user_id, limit,
+    )
+
+    history = []
+    for row in rows:
+        them = row["opponent_id"] if row["challenger_id"] == user_id else row["challenger_id"]
+        if row["status"] != "finished":
+            result = "cancelled"          # 취소/무효 — 판돈은 반환된 상태
+        elif row["winner_id"] is None:
+            result = "draw"
+        else:
+            result = "win" if row["winner_id"] == user_id else "loss"
+        # 판돈전만 득실이 있다. 승리는 +판돈, 패배는 -판돈, 무승부/취소는 0.
+        delta = 0
+        if result == "win":
+            delta = row["wager"]
+        elif result == "loss":
+            delta = -row["wager"]
+        history.append({
+            "match_id": row["match_id"],
+            "opponent_id": str(them),     # 자바스크립트 Number는 디스코드 ID(64비트)를 못 담는다
+            "result": result,
+            "wager": row["wager"],
+            "delta": delta,
+            "played_at": row["created_at"].isoformat(),
+        })
+    return history
+
 async def fetch_battle_decks(conn, user_id: int, lang: str) -> dict[int, list[dict]]:
     """PVP에 쓸 수 있는 덱(5장이 다 채워진 것)만 카드 정보까지 붙여서 가져온다."""
     rows = await conn.fetch(
@@ -902,12 +1042,53 @@ async def handle_deck_data(request):
                     "web_save_failed", "web_in_other_deck", "web_no_cards", "web_no_matches", "web_full",
                     "web_filter_all", "web_filter_element", "web_filter_grade", "web_filter_job",
                     "web_reset_enhance", "web_reset_enhance_confirm", "web_reset_enhance_done",
-                    "web_reset_enhance_failed")
+                    "web_reset_enhance_failed",
+                    "web_tab_deck", "web_tab_history", "web_history_empty", "web_history_loading",
+                    "web_result_win", "web_result_loss", "web_result_draw", "web_result_cancelled",
+                    "web_history_opponent", "web_history_unknown", "web_history_friendly",
+                    "web_tab_summons", "web_summons_empty", "web_summon_new",
+                    "web_summon_enhance", "web_summon_maxed", "web_summon_refund",
+                    "web_summon_count", "web_summon_cost",
+                    "web_expired")
     }
     data["stat_labels"] = {key: get_msg(lang, f"stat_{key}") for key in STAT_KEYS}
     data["job_labels"] = {key: get_msg(lang, f"job_{key}") for key in data["jobs"]}
     data["element_labels"] = {key: get_msg(lang, f"element_{key}") for key in data["elements"]}
     return web.json_response(data)
+
+async def handle_match_history(request):
+    """덱 편성 페이지의 'PVP 전적' 탭이 부르는 API.
+
+    탭을 눌렀을 때만 호출된다(지연 로딩) — 덱만 보고 나가는 사람에게는 조회 비용이 0이다.
+    """
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, lang = resolved
+
+    limit = config["web_config"].get("history_limit", 50)
+    async with bot.pool.acquire() as conn:
+        matches = await fetch_match_history(conn, user_id, limit)
+
+    # 상대 이름은 디스코드 쪽에만 있다. 캐시에 없으면 ID를 그대로 보여주는 대신 빈 값으로 두고
+    # 화면에서 "알 수 없는 상대"로 표기한다 (여기서 사용자 조회 API를 호출하면 느려진다).
+    for match in matches:
+        user = bot.get_user(int(match["opponent_id"]))
+        match["opponent_name"] = user.display_name if user else ""
+
+    return web.json_response({"matches": matches})
+
+async def handle_summon_history(request):
+    """덱 편성 페이지의 '소환 이력' 탭이 부르는 API (탭을 처음 열 때만 호출)."""
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, lang = resolved
+
+    limit = config["web_config"].get("history_limit", 50)
+    async with bot.pool.acquire() as conn:
+        summons = await fetch_summon_history(conn, user_id, lang, limit)
+    return web.json_response({"summons": summons})
 
 async def handle_deck_save(request):
     resolved = resolve_deck_token(request)
@@ -1005,6 +1186,8 @@ async def start_web_server():
     app.router.add_get("/health", handle_health)
     app.router.add_get("/deck", handle_deck_page)
     app.router.add_get("/api/deck", handle_deck_data)
+    app.router.add_get("/api/history", handle_match_history)
+    app.router.add_get("/api/summons", handle_summon_history)
     app.router.add_post("/api/deck", handle_deck_save)
     app.router.add_post("/api/deck/reset-enhance", handle_deck_reset_enhance)
 
