@@ -59,10 +59,10 @@
   .cost { font-size: 12px; color: var(--bad); }
   .refund { font-size: 12px; color: var(--SR); }
   .pulls { display: flex; gap: 8px; flex-wrap: wrap; }
-  .pull { width: 72px; }
-  .pull img { width: 72px; aspect-ratio: 402 / 591; object-fit: cover; object-position: top center;
-              border-radius: 6px; background: #14161b; display: block; border: 2px solid var(--line); }
-  .pull.new img { border-color: var(--ok); }
+  /* 덱 편성 카드(약 150px)와 원래 크기(72px)의 중간 */
+  .pull { width: 110px; }
+  .pull .art { border-radius: 6px; overflow: hidden; outline: 2px solid transparent; }
+  .pull.new .art { outline-color: var(--ok); }
   .pull .pname { font-size: 10px; color: var(--dim); margin-top: 3px;
                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pull .tag { font-size: 9px; padding: 1px 5px; border-radius: 8px; border: 1px solid var(--line);
@@ -90,8 +90,19 @@
   .card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,101,242,.35); }
   .card.locked { opacity: .38; cursor: not-allowed; }
   .card.locked:hover { transform: none; }
-  .thumb { width: 100%; aspect-ratio: 402 / 591; object-fit: cover; object-position: top center;
-           display: block; background: #14161b; }
+  /* 카드 그림 = 일러스트 + 직업/속성 아이콘.
+     등급 프레임(512x768 PNG 4장, 합계 2.27MB)은 일부러 안 쓴다 — 화면 표시 크기가 100px대라
+     들이는 용량 대비 얻는 게 적다. 아이콘 2종은 합쳐서 0.11MB뿐이고 종류가 고정(6+6)이라
+     카드가 몇 장이든 브라우저가 한 번만 받는다.
+     위쪽 두 모서리는 등급 배지(.grade)와 선택 번호(.pick)가 이미 쓰고 있어서 아래쪽에 놓는다. */
+  .art { position: relative; width: 100%; aspect-ratio: 402 / 591; background: #14161b; }
+  .art .portrait { width: 100%; height: 100%; object-fit: cover; object-position: top center;
+                   display: block; }
+  .art .icon { position: absolute; bottom: 5px; width: 26%; max-width: 34px;
+               filter: drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
+  .art .elem { left: 5px; }
+  .art .job { right: 5px; }
+
   .grade { position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 700;
            padding: 2px 6px; border-radius: 4px; color: #10121a; }
   .pick { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%;
@@ -140,6 +151,8 @@ let selected = [];      // 현재 덱에 고른 hero_id 목록 (순서 = 슬롯)
 let filters = { element: "", grade: "", job: "" };  // ""는 "전체"
 
 const $ = (id) => document.getElementById(id);
+// 에셋 확장자는 서버 설정을 따른다 (PNG -> WebP 전환을 설정 한 줄로 되돌릴 수 있게)
+let EXT = ".webp";
 const msg = (key, vars = {}) =>
   (data.messages[key] || "").replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
 
@@ -154,12 +167,16 @@ async function load() {
   const res = await fetch(`/api/deck?token=${encodeURIComponent(token)}`);
   if (!res.ok) { document.body.innerHTML = "<div class='empty'>Link expired.</div>"; return; }
   data = await res.json();
+  EXT = data.image_ext || EXT;
 
   document.title = data.messages.web_title;
   $("save").textContent = data.messages.web_save;
   renderViewTabs();
   renderFilters();
   selectDeck(1);
+  // 디스코드에서 "소환 이력 보기"로 들어오면 그 탭이 열린 채로 시작한다 (#summons / #history)
+  const wanted = location.hash.slice(1);
+  if (wanted === "history" || wanted === "summons") selectView(wanted);
 }
 
 // ── 화면 전환 (덱 설정 / PVP 전적) ────────────────────────────────
@@ -266,9 +283,8 @@ function renderSummons() {
 
     // 소환 1회가 카드 여러 장을 담는다 (10연이면 10장) — 한 덩어리로 묶어서 보여준다
     const pulls = s.cards.map(c => {
-      const img = `${data.image_base_url}hero/${encodeURIComponent(c.image_name)}.png`;
       return `<div class="pull ${c.outcome}">` +
-             `<img src="${img}" alt="" loading="lazy">` +
+             cardArt(c) +
              `<div class="pname">${escapeHtml(c.name)}</div>` +
              `<span class="tag">${tags[c.outcome] || c.outcome}</span></div>`;
     }).join("");
@@ -287,6 +303,21 @@ function renderSummons() {
       `</div><div class="pulls">${pulls}</div>`;
     box.appendChild(el);
   }
+}
+
+// 카드 그림 한 장의 마크업. 덱 편성과 소환 이력이 같이 쓴다.
+// 아이콘은 종류가 고정(직업 6 + 속성 6)이라 카드가 몇 장이든 브라우저가 한 번만 받아 캐시한다 —
+// 카드 수에 비례해 늘어나는 건 일러스트뿐이다.
+function cardArt(card) {
+  const base = data.image_base_url;
+  const parts = [
+    `<img class="portrait" src="${base}hero/${encodeURIComponent(card.image_name)}${EXT}" alt="" loading="lazy">`,
+    `<img class="icon job" src="${base}job_icon/${card.job}${EXT}" alt="" title="${data.job_labels?.[card.job] || ""}" loading="lazy">`,
+  ];
+  if (card.element) {
+    parts.push(`<img class="icon elem" src="${base}element/${card.element}${EXT}" alt="" title="${data.element_labels?.[card.element] || ""}" loading="lazy">`);
+  }
+  return `<div class="art">${parts.join("")}</div>`;
 }
 
 // 상대 이름은 디스코드 표시 이름이라 무엇이든 들어올 수 있다 — 반드시 이스케이프해서 넣는다
@@ -383,14 +414,13 @@ function render() {
     const statsHtml = data.stat_order.map(key => {
       const gained = card.bonus[key];
       return `<span class="stat" title="${data.stat_labels[key]}">
-                <img src="${data.image_base_url}stat_icon/${key}.png" alt="">
+                <img src="${data.image_base_url}stat_icon/${key}${EXT}" alt="">
                 ${card.stats[key]}${gained ? `<span class="plus">(+${gained})</span>` : ""}
               </span>`;
     }).join("");
 
     el.innerHTML = `
-      <img class="thumb" loading="lazy"
-           src="${data.image_base_url}hero/${encodeURIComponent(card.image_name)}.png" alt="">
+      ${cardArt(card)}
       <span class="grade" style="background: var(${GRADE_COLOR[card.grade] || "--R"})">${card.grade}</span>
       ${lockedIn ? `<span class="lockmsg">${msg("web_in_other_deck", { number: lockedIn })}</span>`
                  : `<span class="pick">${selected.indexOf(card.hero_id) + 1}</span>`}
