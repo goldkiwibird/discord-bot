@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import random
 import secrets
@@ -209,6 +210,24 @@ bot = ArcadeBot()
 async def on_ready():
     print(f"✅ 오락실 봇 로그인 완료: {bot.user}")
 
+# 출석 SQL. 테스트(test_오락실.py)가 이 상수를 그대로 import해서 검증하므로, 문구를 복사해
+# 옮겨 적지 말 것 — 복사본을 두면 운영 쿼리만 바뀌었을 때 테스트가 눈치채지 못한다.
+# 인자: $1 user_id, $2 기존 유저 보상, $3 오늘, $4 어제, $5 신규 유저 보상.
+# `xmax = 0`은 ON CONFLICT를 안 타고 INSERT된 행, 즉 DB에 없던 신규 유저라는 뜻이다.
+CHECKIN_SQL = """
+    INSERT INTO users (user_id, points, last_checkin_date, checkin_streak)
+    VALUES ($1, $5, $3, 1)
+    ON CONFLICT (user_id) DO UPDATE SET
+        points = users.points + $2,
+        last_checkin_date = EXCLUDED.last_checkin_date,
+        checkin_streak = CASE
+            WHEN users.last_checkin_date = $4 THEN users.checkin_streak + 1
+            ELSE 1
+        END
+    WHERE users.last_checkin_date IS DISTINCT FROM EXCLUDED.last_checkin_date
+    RETURNING points, checkin_streak, (xmax = 0) AS is_first_time
+"""
+
 @bot.tree.command(
     name=app_commands.locale_str("check-in"),
     description=app_commands.locale_str(config["commands"]["check-in"]["description"]),
@@ -217,28 +236,16 @@ async def checkin(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     lang = resolve_lang(interaction)
-    daily_points = config.get("checkin_config", {}).get("daily_points", 100)
+    checkin_conf = config.get("checkin_config", {})
+    daily_points = checkin_conf.get("daily_points", 100)
+    first_time_points = checkin_conf.get("first_time_points", daily_points)
     today = today_kst()
     yesterday = today - timedelta(days=1)
 
     try:
         async with bot.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO users (user_id, points, last_checkin_date, checkin_streak)
-                VALUES ($1, $2, $3, 1)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    points = users.points + EXCLUDED.points,
-                    last_checkin_date = EXCLUDED.last_checkin_date,
-                    checkin_streak = CASE
-                        WHEN users.last_checkin_date = $4 THEN users.checkin_streak + 1
-                        ELSE 1
-                    END
-                WHERE users.last_checkin_date IS DISTINCT FROM EXCLUDED.last_checkin_date
-                RETURNING points, checkin_streak
-                """,
-                interaction.user.id, daily_points, today, yesterday
-            )
+            row = await conn.fetchrow(CHECKIN_SQL, interaction.user.id, daily_points,
+                                      today, yesterday, first_time_points)
     except Exception as e:
         print(f"⚠️ 출석 처리 중 DB 오류: {e}")
         await interaction.followup.send(get_msg(lang, "checkin_error"), ephemeral=True)
@@ -248,9 +255,14 @@ async def checkin(interaction: discord.Interaction):
         await interaction.followup.send(get_msg(lang, "checkin_already_done"), ephemeral=True)
         return
 
+    # `xmax = 0`이면 ON CONFLICT를 안 타고 새 행이 들어갔다는 뜻 = DB에 없던 신규 유저.
+    # (users 행을 만드는 곳은 이 출석 명령 하나뿐이라 "첫 출석"과 같은 의미다.)
+    earned = first_time_points if row["is_first_time"] else daily_points
     embed = discord.Embed(
         title=get_msg(lang, "checkin_success_title"),
-        description=get_msg(lang, "checkin_success_desc", points=daily_points),
+        description=get_msg(lang,
+                            "checkin_first_time_desc" if row["is_first_time"] else "checkin_success_desc",
+                            points=f"{earned:,}"),
         color=discord.Color.green()
     )
     embed.add_field(name=get_msg(lang, "checkin_points_label"), value=f"{row['points']:,}P", inline=True)
@@ -892,10 +904,52 @@ async def handle_deck_reset_enhance(request):
         return web.json_response({"error": reason}, status=400)
     return web.json_response({"ok": True})
 
+async def handle_health(request):
+    """UptimeRobot이 주기적으로 찔러보는 상태 확인 엔드포인트.
+
+    `/`는 프로세스가 떠 있기만 하면 무조건 200을 준다. 그래서 **봇이 디스코드 게이트웨이와
+    끊기거나 DB가 죽은 채로 껍데기만 돌고 있는 상태(명령어가 전부 안 먹는 상태)를 못 잡는다.**
+    여기서는 실제로 쓸 수 있는 상태인지 확인하고, 아니면 503을 줘서 UptimeRobot 알림이 울리게 한다.
+    Render 스핀다운을 막는 효과는 `/`와 똑같으니 모니터는 이쪽을 보게 하는 게 이득이다.
+
+    DB 조회에 타임아웃을 거는 이유: DB가 응답을 안 하면 이 요청이 영영 안 끝나고,
+    그러면 UptimeRobot 쪽에서는 "죽었다"가 아니라 그냥 느린 것처럼 보여 알림이 늦어진다.
+    """
+    timeout = config["web_config"]["health_db_timeout_seconds"]
+
+    async def probe_db():
+        async with bot.pool.acquire() as conn:
+            return await conn.fetchval("SELECT 1")
+
+    database = False
+    if bot.pool is not None:
+        try:
+            database = await asyncio.wait_for(probe_db(), timeout) == 1
+        except (asyncpg.PostgresError, OSError, asyncio.TimeoutError):
+            database = False
+
+    discord_ok = bot.is_ready() and not bot.is_closed()
+    healthy = discord_ok and database
+    return web.json_response(
+        {
+            "status": "ok" if healthy else "degraded",
+            "discord": discord_ok,
+            "database": database,
+            # 연결 전에는 latency가 NaN이라 그대로 넣으면 JSON으로 직렬화할 수 없다
+            "latency_ms": None if math.isnan(bot.latency) else round(bot.latency * 1000),
+        },
+        status=200 if healthy else 503,
+    )
+
 async def start_web_server():
-    """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다."""
+    """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다.
+
+    Render 무료 플랜은 들어오는 요청이 한동안 없으면 인스턴스를 재우고(스핀다운), 그동안엔
+    봇도 같이 멈춘다. 그래서 UptimeRobot 같은 외부 모니터가 여기를 주기적으로 찔러줘야 한다.
+    """
     app = web.Application()
     app.router.add_get("/", lambda req: web.Response(text="Arcade bot is online!"))
+    app.router.add_get("/health", handle_health)
     app.router.add_get("/deck", handle_deck_page)
     app.router.add_get("/api/deck", handle_deck_data)
     app.router.add_post("/api/deck", handle_deck_save)
@@ -906,6 +960,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     await web.TCPSite(runner, "0.0.0.0", port).start()
     print(f"🌐 웹서버 구동 완료 (포트: {port})")
+    return runner  # 테스트가 끝나고 포트를 닫을 수 있도록 돌려준다
 
 def web_base_url() -> str:
     """덱 링크에 쓸 공개 URL. Render가 자동으로 넣어주는 값을 우선 쓰고, 없으면 설정/로컬 순."""
@@ -1340,12 +1395,13 @@ class DeckPickView(discord.ui.View):
             if them.deck_number is None or self.match.finished:
                 return
 
-            # 양쪽 덱이 정해졌으니 상대방의 덱 5장만 카드 이미지 한 줄로 공개하고 1라운드 시작
-            # (내 덱은 이미 알고 있으니 안 보여줘도 됨)
+            # 양쪽 덱이 정해졌으니 상대방의 덱 5장을 카드 이미지로 공개하고 1라운드 시작
+            # (내 덱은 이미 알고 있으니 안 보여줘도 됨). 한 줄로 늘어놓으면 디스코드가 가로에
+            # 맞춰 줄여버려 카드가 작아지므로 2장/3장 두 줄(`deck_reveal_rows`)로 크게 보여준다.
             for side in (self.match.challenger, self.match.opponent):
                 other = self.match.other(side.user.id)
                 cards = [to_card_data(card) for card in other.remaining]
-                image = await asyncio.to_thread(bot.renderer.render_grid, cards)
+                image = await asyncio.to_thread(bot.renderer.render_rows, cards)
                 embed = discord.Embed(
                     title=get_msg(self.match.lang, "match_vs",
                                   challenger=self.match.challenger.user.display_name,
