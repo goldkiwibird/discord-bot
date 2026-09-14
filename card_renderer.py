@@ -82,6 +82,7 @@ class CardRenderer:
         # 설정 키를 따로 만들지 않고 image_base_url 하나를 서버/브라우저가 공유한다.
         self.image_base_url = (card_config.get("image_base_url") or "").rstrip("/")
         self._asset_timeout = card_config.get("asset_fetch_timeout_seconds", 10)
+        self._user_agent = card_config.get("asset_user_agent", "arcade-discord-bot/1.0")
         # 원본 에셋 캐시. 버킷에서 받는 경우 재조회가 네트워크 왕복이라 캐시가 더 중요해진다.
         # LRU 갱신(순서 이동+삭제)이 들어가므로 베이스 카드 캐시와 같은 이유로 락이 필요하다.
         self._portrait_limit = card_config.get("portrait_cache_size", 80)
@@ -133,9 +134,23 @@ class CardRenderer:
         # 캐릭터 이미지 파일명이 한글 원본이라(hero/가루가.png) 반드시 퍼센트 인코딩해야 한다 —
         # urllib은 URL을 ascii로 인코딩하므로 한글을 그대로 넣으면 UnicodeEncodeError로 죽는다.
         url = "/".join((self.image_base_url, *(urllib.parse.quote(part) for part in parts)))
+        # urllib 기본 User-Agent(`Python-urllib/3.x`)는 CDN·WAF가 봇으로 보고 403으로 막는 경우가 있어
+        # 평범한 값을 직접 지정한다.
+        request = urllib.request.Request(url, headers={"User-Agent": self._user_agent})
         try:
-            with urllib.request.urlopen(url, timeout=self._asset_timeout) as response:
+            with urllib.request.urlopen(request, timeout=self._asset_timeout) as response:
                 data = response.read()
+        except urllib.error.HTTPError as e:
+            # 서버가 왜 거절했는지는 응답 본문에 적혀 있다 (예: r2.dev는 버킷 공개 접근이 꺼져 있으면
+            # 403과 함께 그 사유를 준다). 본문을 버리면 로그에 상태 코드만 남아 원인 파악이 한참 늦어진다.
+            # HTTPError는 URLError의 하위 클래스라 반드시 이 절이 먼저 와야 한다.
+            try:
+                detail = e.read(300).decode("utf-8", "replace").strip().replace(chr(10), " ")
+            except Exception:
+                detail = ""
+            raise FileNotFoundError(
+                f"에셋을 받지 못했습니다: {url} (HTTP {e.code} {e.reason}"
+                + (f" / 서버 응답: {detail}" if detail else "") + ")") from e
         except (urllib.error.URLError, TimeoutError) as e:
             # 네트워크는 언제든 실패할 수 있고, 여기서 안 잡으면 렌더 스레드가 그대로 죽는다
             raise FileNotFoundError(f"에셋을 받지 못했습니다: {url} ({e})") from e
