@@ -413,9 +413,18 @@ class CardRenderer:
         return sheet
 
 
-def to_png_bytes(image: Image.Image) -> io.BytesIO:
-    """디스코드 첨부로 바로 넘길 수 있는 PNG 버퍼로 변환."""
+def to_png_bytes(image: Image.Image, compress_level: int = 1) -> io.BytesIO:
+    """디스코드 첨부로 바로 넘길 수 있는 PNG 버퍼로 변환.
+
+    **`optimize=True`를 쓰지 않는다.** 10연 소환 이미지 기준 실측으로 인코딩이 613ms 걸리는데,
+    기본 압축(129ms) 대비 줄여주는 용량이 2.5%뿐이라 값이 전혀 안 맞는다. Render 무료 인스턴스는
+    **0.1 CPU**여서 이 차이가 수 초 단위로 증폭된다 (로컬은 20코어라 체감이 안 됐다).
+
+    `compress_level=1`은 같은 이미지를 52ms에 인코딩한다(=optimize 대비 11.7배). 용량은
+    2.0MB -> 3.0MB로 늘지만 디스코드 업로드 한도(10MB)에 한참 못 미치고, 데이터센터에서
+    나가는 업로드보다 0.1 CPU에서의 압축 연산이 훨씬 비싸다.
+    """
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
+    image.save(buffer, format="PNG", compress_level=compress_level)
     buffer.seek(0)
     return buffer
