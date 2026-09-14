@@ -1095,6 +1095,21 @@ async def resend_match_view(side: PvpSide, embed: discord.Embed, view: discord.u
         except discord.HTTPException:
             pass
 
+async def run_match_step(match: PvpMatch, step) -> None:
+    """매치 진행 한 단계를 돌리되, 예상 못 한 예외가 나면 판돈을 돌려주고 매치를 끝낸다.
+
+    View 콜백에서 예외가 그냥 밖으로 새면 discord.py가 로그만 찍고 끝이라 **매치가 메모리에
+    살아 있는 채로 멈춘다.** 두 사람은 아무 안내도 못 받고 화면이 멈춘 것처럼 보이고, 더 나쁜 건
+    DB의 판돈이 'playing'으로 묶인 채 남아서 **봇을 재시작해야(refund_stale_matches) 포인트가
+    풀린다**는 점이다. 실제로 에셋 버킷이 403을 주면서 이 상황이 났다 (카드 이미지를 못 그리면
+    라운드 판정도 계속 실패하므로, 이미지 없이 진행하기보다 판돈을 돌려주고 끊는 게 맞다).
+    """
+    try:
+        await step
+    except Exception:
+        traceback.print_exc()
+        await finish_match(match, None, reason_key="match_cancelled_error")
+
 async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str | None = None) -> None:
     """정산하고 양쪽에 최종 결과를 보여준 뒤 매치를 정리한다."""
     if match.finished:
@@ -1266,7 +1281,7 @@ class CardPickView(discord.ui.View):
         async with self.match.lock:
             them = self.match.other(self.side.user.id)
             if them.pick is not None and not self.match.finished:
-                await resolve_round(self.match)
+                await run_match_step(self.match, resolve_round(self.match))
 
     async def on_timeout(self):
         # 제한 시간 안에 못 고르면 남은 카드 중 하나를 무작위로 대신 낸다 (매치를 취소하지 않음).
@@ -1284,7 +1299,7 @@ class CardPickView(discord.ui.View):
         async with self.match.lock:
             them = self.match.other(self.side.user.id)
             if them.pick is not None and not self.match.finished:
-                await resolve_round(self.match)
+                await run_match_step(self.match, resolve_round(self.match))
 
 class MatchInviteView(discord.ui.View):
     """도전장 DM에 붙는 수락/거부 버튼."""
@@ -1412,21 +1427,25 @@ class DeckPickView(discord.ui.View):
             # 양쪽 덱이 정해졌으니 상대방의 덱 5장을 카드 이미지로 공개하고 1라운드 시작
             # (내 덱은 이미 알고 있으니 안 보여줘도 됨). 한 줄로 늘어놓으면 디스코드가 가로에
             # 맞춰 줄여버려 카드가 작아지므로 2장/3장 두 줄(`deck_reveal_rows`)로 크게 보여준다.
-            for side in (self.match.challenger, self.match.opponent):
-                other = self.match.other(side.user.id)
-                cards = [to_card_data(card) for card in other.remaining]
-                image = await asyncio.to_thread(bot.renderer.render_rows, cards)
-                embed = discord.Embed(
-                    title=get_msg(self.match.lang, "match_vs",
-                                  challenger=self.match.challenger.user.display_name,
-                                  opponent=self.match.opponent.user.display_name),
-                    description=get_msg(self.match.lang, "match_opponent_deck"),
-                    color=discord.Color.blurple())
-                embed.set_image(url="attachment://opponent_deck.png")
-                await side.user.send(embed=embed,
-                                     file=discord.File(to_png_bytes(image), filename="opponent_deck.png"))
+            await run_match_step(self.match, self.reveal_and_start())
 
-            await start_round(self.match)
+    async def reveal_and_start(self) -> None:
+        """상대 덱을 이미지로 공개하고 1라운드를 시작한다 (run_match_step이 감싸서 호출)."""
+        for side in (self.match.challenger, self.match.opponent):
+            other = self.match.other(side.user.id)
+            cards = [to_card_data(card) for card in other.remaining]
+            image = await asyncio.to_thread(bot.renderer.render_rows, cards)
+            embed = discord.Embed(
+                title=get_msg(self.match.lang, "match_vs",
+                              challenger=self.match.challenger.user.display_name,
+                              opponent=self.match.opponent.user.display_name),
+                description=get_msg(self.match.lang, "match_opponent_deck"),
+                color=discord.Color.blurple())
+            embed.set_image(url="attachment://opponent_deck.png")
+            await side.user.send(embed=embed,
+                                 file=discord.File(to_png_bytes(image), filename="opponent_deck.png"))
+
+        await start_round(self.match)
 
     async def on_timeout(self):
         if not self.match.finished:
