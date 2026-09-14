@@ -774,20 +774,34 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
         return
 
     cards = build_cards(outcomes, lang)
-    # 이미지 합성은 CPU 작업이라 별도 스레드에서 돌린다 (봇 하트비트가 밀리지 않도록)
-    if len(cards) == 1:
-        image = await asyncio.to_thread(bot.renderer.render_card, cards[0])
-    else:
-        image = await asyncio.to_thread(bot.renderer.render_grid, cards)
-
     embed = discord.Embed(
         title=get_msg(lang, "summon_result_title"),
         description=describe_outcomes(outcomes, lang) + "\n\n" + get_msg(lang, "summon_points_left", points=f"{points:,}"),
         color=discord.Color.gold(),
     )
-    embed.set_image(url="attachment://summon.png")
+
+    # 이미지 합성은 CPU 작업이라 별도 스레드에서 돌린다 (봇 하트비트가 밀리지 않도록).
+    # **여기서 터져도 예외를 그대로 올리면 안 된다**: 이 시점엔 포인트 차감과 카드 지급이 이미
+    # DB에 반영돼 있어서, 명령어가 실패로 끝나면 유저는 포인트만 쓰고 무엇을 뽑았는지조차 못 본다.
+    # 그림은 포기하더라도 뽑은 결과(텍스트)는 반드시 전달한다 (에셋 버킷 403으로 실제로 겪음).
+    try:
+        if len(cards) == 1:
+            image = await asyncio.to_thread(bot.renderer.render_card, cards[0])
+        else:
+            image = await asyncio.to_thread(bot.renderer.render_grid, cards)
+    except Exception:
+        traceback.print_exc()
+        image = None
 
     # 소환 결과는 DM이 아니라 명령어를 실행한 채널에 본인에게만 보이는(ephemeral) 메시지로 전달
+    if image is None:
+        note = get_msg(lang, "summon_image_failed")
+        if note:
+            embed.description += "\n\n" + note
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    embed.set_image(url="attachment://summon.png")
     await interaction.followup.send(
         embed=embed, file=discord.File(to_png_bytes(image), filename="summon.png"), ephemeral=True
     )
