@@ -1,3 +1,5 @@
-discord.py
-aiohttp
-beautifulsoup4
+# 통합관리봇. 오락실봇과 같은 이유로 버전 고정 (오락실_requirements.txt 주석 참고).
+discord.py==2.7.1
+aiohttp==3.14.3
+beautifulsoup4==4.15.0
+python-dotenv==1.0.0
