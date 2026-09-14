@@ -172,7 +172,9 @@
     "deck_reveal_card_width": 420,
     "matchup_gap": 100,
     "matchup_text_padding": 28,
-    "matchup_value_font_size": 44
+    "matchup_value_font_size": 44,
+    "png_compress_level": 1,
+    "max_concurrent_renders": 2
   },
   "commands": {
     "check-in": {
