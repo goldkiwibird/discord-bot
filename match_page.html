@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle</title>
+<style>
+  :root {
+    --bg: #11131a; --panel: #1c1f29; --line: #2e3342; --text: #e7e9ee; --dim: #8d94a5;
+    --me: #4f8cff; --them: #ff5f6d; --ok: #3ddc84; --bad: #ff4d4f; --gold: #ffc53d;
+    --R: #8b96a5; --Rplus: #4fa3c7; --SR: #c9a227; --SSR: #b562d6;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); overflow: hidden;
+         font-family: "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+
+  /* 화면 전체 흔들기 — 판정 순간의 타격감 */
+  @keyframes shake {
+    0%,100% { transform: translate(0,0); }
+    15% { transform: translate(-9px, 4px) rotate(-.5deg); }
+    30% { transform: translate(8px, -5px) rotate(.4deg); }
+    45% { transform: translate(-6px, -3px); }
+    60% { transform: translate(5px, 4px); }
+    80% { transform: translate(-3px, 1px); }
+  }
+  .shake { animation: shake .45s cubic-bezier(.36,.07,.19,.97); }
+
+  #app { display: grid; grid-template-columns: 1fr 220px; height: 100%; }
+  @media (max-width: 760px) { #app { grid-template-columns: 1fr; } .panel { display: none; } }
+
+  .board { display: grid; grid-template-rows: auto 1fr auto; height: 100%; min-height: 0;
+           padding: 10px 14px; gap: 8px; }
+
+  /* ── 이름표 ─────────────────────────────── */
+  .nameplate { display: flex; align-items: center; gap: 10px; }
+  .nameplate .who { font-size: 15px; font-weight: 700; }
+  .nameplate.them .who { color: var(--them); }
+  .nameplate.me .who { color: var(--me); }
+  .pips { display: flex; gap: 4px; }
+  .pip { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); }
+  .pip.on { border-color: transparent; }
+  .them .pip.on { background: var(--them); box-shadow: 0 0 10px var(--them); }
+  .me .pip.on { background: var(--me); box-shadow: 0 0 10px var(--me); }
+  @keyframes pipPop { 0% { transform: scale(0); } 60% { transform: scale(1.5); } 100% { transform: scale(1); } }
+  .pip.pop { animation: pipPop .4s ease-out; }
+
+  /* ── 손패 ───────────────────────────────── */
+  .hand { display: flex; gap: 8px; flex-wrap: wrap; min-height: 96px; align-content: flex-start; }
+  .hand.me { justify-content: center; }
+  .hand.them { justify-content: center; }
+  /* 카드 = 등급 프레임 + 일러스트 + 상단 직업/속성 아이콘 + 하단 능력치.
+     좌표는 전부 512x768 프레임 대비 비율이라 카드 크기를 바꿔도 정렬이 유지된다
+     (card_renderer.py의 portrait_box / job_icon_center / stat_panel에서 그대로 뽑았다).
+     **프레임의 일러스트 영역은 투명이 아니라 불투명 텍스처**라 프레임을 깔고 그 위에
+     일러스트를 올려야 한다 — 순서를 바꾸면 그림이 가려진다.
+     등급은 프레임 색이 말해주므로 따로 배지를 달지 않는다. */
+  .card { width: 140px; flex: none; position: relative; transition: transform .18s, filter .18s; }
+  .hand.me .card.pickable { cursor: pointer; }
+  /* hover에 drop-shadow를 쓰면 알파 모양을 따라 블러를 계산하느라 매번 새 레이어가 생긴다.
+     카드는 프레임 PNG라 box-shadow는 사각형으로 어긋나므로, 블러가 없는 밝기 필터로 대신한다. */
+  .hand.me .card.pickable { will-change: transform; }
+  .hand.me .card.pickable:hover { transform: translateY(-10px) scale(1.05);
+                                   filter: brightness(1.15) saturate(1.1); }
+  .card.gone { opacity: 0; transform: scale(.6); pointer-events: none; }
+
+  .art { position: relative; width: 100%; aspect-ratio: 512 / 768; }
+  .art > * { position: absolute; }
+  .art .frame { inset: 0; width: 100%; height: 100%; }
+  .art .portrait { left: 7.81%; top: 11.72%;
+                    width: 84.18%; height: 50.65%;
+                    object-fit: contain; }
+  .art .icon { top: 18.36%; transform: translate(-50%, -50%); }
+  .art .job { left: 84.77%; width: 12.30%; }
+  .art .elem { left: 15.23%; width: 14.65%; }
+
+  /* 이름은 프레임의 이름칸 안에. 카드가 작아도 읽히도록 글자 크기는 카드 폭에 비례시킨다. */
+  .art .cname { left: 9.77%; top: 5.73%;
+                 width: 80.47%; height: 4.56%;
+                 display: flex; align-items: center; justify-content: center;
+                 font-size: 5.4cqw; font-weight: 700; color: #fff; overflow: hidden; line-height: 1;
+                 white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.8); }
+  .card { container-type: inline-size; }
+
+  /* 능력치는 프레임 하단 패널 안. 아이콘 왼쪽 / 숫자 오른쪽으로 2열 3행. */
+  .art .stat { display: flex; align-items: center; gap: .35em;
+                transform: translateY(-50%); font-size: 8cqw; color: #fff;
+                text-shadow: 0 1px 2px rgba(0,0,0,.85); font-variant-numeric: tabular-nums; }
+  .art .stat img { width: 6.64cqw; height: auto; }
+  .card .st-attack { left: 17.07%; top: 71.85%; }
+  .card .st-hp { left: 59.16%; top: 71.85%; }
+  .card .st-defense { left: 17.07%; top: 79.88%; }
+  .card .st-accuracy { left: 59.16%; top: 79.88%; }
+  .card .st-evasion { left: 17.07%; top: 87.91%; }
+
+  /* ── 판정 무대 ──────────────────────────── */
+  .stage { position: relative; display: flex; align-items: center; justify-content: center;
+           min-height: 0; }
+  /* 카드가 위/아래에서 날아와 가운데서 부딪히는 구성.
+     보드가 세로(상대 위 / 나 아래)이므로 무대도 세로로 둬야 손패에서 튀어나온 것처럼 읽힌다.
+     가로 배치로 두면 카드는 세로로 꽂히는데 자리는 좌우라 따로 논다. */
+  /* 판정은 보드 위에 겹쳐 띄운다. 가운데 행에 끼워 넣으면 손패(카드 140px = 210px 높이)와
+     세로 공간을 다퉈서 카드를 작게 만들 수밖에 없다. 잠깐 크게 보여주고 걷히는 편이
+     타격감도 살고 손패도 그대로 쓸 수 있다. */
+  .clashLayer { position: fixed; inset: 0; z-index: 30; display: flex;
+                align-items: center; justify-content: center;
+                background: radial-gradient(ellipse at center, rgba(6,8,13,.72), rgba(6,8,13,.93));
+                animation: fadeIn .18s ease-out both; }
+  .clashLayer.out { animation: fadeOut .35s ease-in both; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+  .clash { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .fighter { display: flex; align-items: center; gap: 14px; }
+  .fighter.them { flex-direction: row; }
+  .fighter.me { flex-direction: row-reverse; }
+  .fighter .card { width: 172px; }
+  .fighter .info { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
+  .fighter.me .info { align-items: flex-end; text-align: right; }
+
+  @keyframes slamDown { 0% { transform: translateY(-220px) scale(.7); opacity: 0; }
+                        70% { transform: translateY(10px) scale(1.07); opacity: 1; }
+                        100% { transform: translateY(0) scale(1); } }
+  @keyframes slamUp { 0% { transform: translateY(220px) scale(.7); opacity: 0; }
+                      70% { transform: translateY(-10px) scale(1.07); opacity: 1; }
+                      100% { transform: translateY(0) scale(1); } }
+  .fighter.them .card { animation: slamDown .36s cubic-bezier(.2,.9,.3,1.4) both; }
+  .fighter.me .card { animation: slamUp .36s cubic-bezier(.2,.9,.3,1.4) both .1s; }
+  .fighter.won .card { border-color: var(--gold); box-shadow: 0 0 26px rgba(255,197,61,.65); }
+  .fighter.lost .card { filter: grayscale(.85) brightness(.55); }
+
+  @keyframes valueIn { 0% { transform: scale(2.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+  .value { font-size: 38px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+           animation: valueIn .3s ease-out both .3s; }
+  .fighter.them .value { color: var(--them); }
+  .fighter.me .value { color: var(--me); }
+  .reason { font-size: 11px; color: var(--dim); line-height: 1.35; }
+  .reason b { color: var(--text); font-weight: 600; }
+  .bonus { font-size: 12px; font-weight: 700; color: var(--gold); }
+  @keyframes burst { 0% { transform: scale(.4); opacity: 0; }
+                     40% { transform: scale(1.4); opacity: 1; }
+                     100% { transform: scale(1); opacity: 1; } }
+  .bonus.show { animation: burst .45s ease-out both .45s; }
+
+  .versus { font-size: 18px; font-weight: 800; color: var(--dim); position: relative;
+            margin: 2px 0; }
+  @keyframes impact { 0% { transform: scale(0); opacity: 1; }
+                      100% { transform: scale(4); opacity: 0; } }
+  .impact { position: absolute; inset: -20px; border-radius: 50%; pointer-events: none;
+            border: 3px solid #fff; animation: impact .5s ease-out forwards .34s; }
+
+  /* 판정 문구는 VS 자리에 겹쳐 띄운다. 위쪽에 절대배치하면 상대 카드와 겹치고,
+     따로 한 줄을 차지하면 무대가 세로로 넘친다. 충돌(임팩트) 직후에 나타나 순서도 자연스럽다. */
+  .versus .verdict { position: absolute; left: 50%; top: 50%;
+             transform: translate(-50%, -50%);
+             font-size: 26px; font-weight: 900; letter-spacing: .1em;
+             white-space: nowrap; pointer-events: none; }
+  .versus .vs-text { transition: opacity .2s; }
+  .versus.decided .vs-text { opacity: 0; }
+  .verdict.win { color: var(--ok); text-shadow: 0 0 26px rgba(61,220,132,.7); }
+  .verdict.lose { color: var(--bad); text-shadow: 0 0 26px rgba(255,77,79,.7); }
+  .verdict.draw { color: var(--dim); }
+  @keyframes verdictIn { 0% { transform: translate(-50%,-50%) scale(2.6); opacity: 0; }
+                         55% { transform: translate(-50%,-50%) scale(.9); opacity: 1; }
+                         100% { transform: translate(-50%,-50%) scale(1); opacity: 1; } }
+  .versus .verdict { animation: verdictIn .4s cubic-bezier(.2,.9,.3,1.5) both .42s; }
+
+  .hint { color: var(--dim); font-size: 14px; text-align: center; }
+
+  /* ── 최종 결과 ──────────────────────────── */
+  .final { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px;
+           align-items: center; justify-content: center; background: rgba(8,10,15,.9); z-index: 50; }
+  .final .big { font-size: 62px; font-weight: 900; letter-spacing: .2em; }
+  .final.win .big { color: var(--gold); text-shadow: 0 0 44px rgba(255,197,61,.75); }
+  .final.lose .big { color: var(--bad); text-shadow: 0 0 44px rgba(255,77,79,.6); }
+  .final.draw .big { color: var(--dim); }
+  @keyframes finalIn { 0% { transform: scale(3) rotate(-8deg); opacity: 0; }
+                       60% { transform: scale(.92); opacity: 1; }
+                       100% { transform: scale(1); } }
+  .final .big { animation: finalIn .6s cubic-bezier(.2,.9,.3,1.4) both; }
+  .final .sub { color: var(--dim); font-size: 15px; }
+
+  /* ── 우측 패널 ──────────────────────────── */
+  .panel { background: var(--panel); border-left: 1px solid var(--line); padding: 14px;
+           display: flex; flex-direction: column; gap: 14px; }
+  .panel h2 { margin: 0; font-size: 13px; color: var(--dim); font-weight: 600; }
+  .score { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .roundline { font-size: 13px; color: var(--dim); }
+  .spec { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .dot.off { background: var(--bad); }
+  .timer { font-size: 13px; color: var(--gold); font-variant-numeric: tabular-nums; }
+  .wager { font-size: 13px; color: var(--gold); }
+  .status { font-size: 12px; color: var(--dim); margin-top: auto; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="board">
+    <div>
+      <div class="nameplate them"><span class="who" id="themName">—</span><span class="pips" id="themPips"></span></div>
+      <div class="hand them" id="themHand"></div>
+    </div>
+    <div class="stage" id="stage"><div class="hint" id="hint"></div></div>
+    <div>
+      <div class="hand me" id="myHand"></div>
+      <div class="nameplate me"><span class="who" id="myName">—</span><span class="pips" id="myPips"></span></div>
+    </div>
+  </div>
+  <aside class="panel">
+    <div>
+      <h2 id="roundLabel">—</h2>
+      <div class="score" id="score">0 : 0</div>
+    </div>
+    <div class="wager" id="wager" hidden></div>
+    <div class="timer" id="timer" hidden></div>
+    <div>
+      <h2>관전</h2>
+      <div class="spec"><span class="dot" id="dot"></span><span id="specCount">—</span></div>
+    </div>
+    <div class="status" id="status"></div>
+  </aside>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const matchId = params.get("id");
+const token = params.get("token") || "";
+const $ = (id) => document.getElementById(id);
+// 에셋 확장자는 서버 설정을 따른다 (PNG -> WebP 전환을 설정 한 줄로 되돌릴 수 있게)
+let EXT = ".webp";
+
+let labels = null;
+let state = null;
+let shownRound = 0;      // 이펙트를 이미 재생한 라운드 번호 (같은 스냅샷이 또 와도 두 번 안 튼다)
+let timerEnd = 0;
+const CLASH_MS = 3200;   // 판정 연출을 띄워두는 시간
+
+const msg = (key, vars = {}) =>
+  (labels.messages[key] || key).replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
+
+function esc(text) {
+  const d = document.createElement("div");
+  d.textContent = text ?? "";
+  return d.innerHTML;
+}
+
+// 카드 한 장 = 프레임 + 일러스트 + 직업/속성 아이콘 + 능력치.
+// 서버 렌더러가 그리던 것과 같은 구성이지만 브라우저가 그리므로 서버 CPU는 0이다.
+function cardHtml(card, extraClass = "") {
+  if (!card) return `<div class="card ${extraClass}"><div class="art"></div></div>`;
+  const base = labels.image_base_url;
+  const stats = labels.stat_order.map(key => `
+    <span class="stat st-${key}" title="${esc(labels.stat_labels[key])}">
+      <img src="${base}stat_icon/${key}${EXT}" alt="">${card.stats[key]}
+    </span>`).join("");
+  return `<div class="card ${extraClass}" data-hero="${card.hero_id}">
+    <div class="art">
+      <img class="frame" src="${base}card/${encodeURIComponent(card.grade)}${EXT}" alt="">
+      <img class="portrait" src="${base}hero/${encodeURIComponent(card.image_name)}${EXT}" alt="">
+      <img class="icon job" src="${base}job_icon/${card.job}${EXT}" alt="" title="${esc(labels.job_labels[card.job])}">
+      ${card.element ? `<img class="icon elem" src="${base}element/${card.element}${EXT}" alt="" title="${esc(labels.element_labels[card.element])}">` : ""}
+      <div class="cname">${esc(card.name)}</div>
+      ${stats}
+    </div>
+  </div>`;
+}
+
+function renderPips(el, wins, total) {
+  const before = el.querySelectorAll(".pip.on").length;
+  el.innerHTML = "";
+  for (let i = 0; i < total; i++) {
+    const pip = document.createElement("span");
+    pip.className = "pip" + (i < wins ? " on" : "") + (i === wins - 1 && wins > before ? " pop" : "");
+    el.appendChild(pip);
+  }
+}
+
+function render() {
+  const s = state;
+  $("themName").textContent = s.them.name;
+  $("myName").textContent = s.me.name;
+  renderPips($("themPips"), s.them.wins, s.deck_size);
+  renderPips($("myPips"), s.me.wins, s.deck_size);
+  $("score").textContent = msg("web_match_score", { you: s.me.wins, them: s.them.wins });
+  $("roundLabel").textContent = s.round
+    ? msg("web_match_round", { round: s.round, total: s.deck_size })
+    : msg("match_waiting_deck");
+  $("specCount").textContent = msg("web_match_spectators", { count: s.spectators });
+  if (s.wager) { $("wager").hidden = false; $("wager").textContent = msg("web_match_wager", { wager: s.wager.toLocaleString() }); }
+
+  // 손패: 이미 낸 카드는 빠지고 남은 카드만 정렬된다 (서버가 remaining에서 제거해준다)
+  $("themHand").innerHTML = s.them.remaining.map(c => cardHtml(c)).join("")
+    || (s.phase === "deck" ? "" : `<div class="hint">${msg("match_waiting_deck")}</div>`);
+
+  const canPick = s.my_turn && !s.finished;
+  $("myHand").innerHTML = s.me.remaining
+    .map(c => cardHtml(c, canPick ? "pickable" : "")).join("");
+  if (canPick) {
+    for (const el of $("myHand").querySelectorAll(".card")) {
+      el.onclick = () => pick(Number(el.dataset.hero), el);
+    }
+  }
+
+  // 가운데 행은 항상 안내 문구. 판정 연출은 그 위에 겹쳐 띄웠다가 걷는다.
+  $("stage").innerHTML = `<div class="hint">${
+    s.finished ? msg("web_match_ended")
+    : s.phase === "deck" ? msg("match_waiting_deck")
+    : s.my_turn ? msg("web_match_pick_prompt") : msg("match_waiting_pick")}</div>`;
+  if (s.last_round && s.last_round.round !== shownRound) {
+    showClash(s.last_round);
+    shownRound = s.last_round.round;
+  }
+
+  if (s.finished) showFinal(s);
+  startTimer(s);
+}
+
+function showClash(round) {
+  // last_round는 도전자/상대 축으로 오므로, 내 쪽이 어느 축인지 state로 판별한다
+  const mine = round.mine, theirs = round.theirs;
+  const verdict = round.draw ? "draw" : mine.won ? "win" : "lose";
+  const verdictText = msg(round.draw ? "web_match_draw" : mine.won ? "web_match_win" : "web_match_lose");
+
+  const fighter = (d, who) => `
+    <div class="fighter ${who} ${d.won ? "won" : round.draw ? "" : "lost"}">
+      ${cardHtml(d.card)}
+      <div class="info">
+        <div class="value">${d.value}</div>
+        ${reasonHtml(d)}
+      </div>
+    </div>`;
+
+  document.querySelector(".clashLayer")?.remove();
+  const layer = document.createElement("div");
+  layer.className = "clashLayer";
+  layer.innerHTML = `
+    <div class="clash">
+      ${fighter(theirs, "them")}
+      <div class="versus">
+        <span class="vs-text">VS</span>
+        <span class="impact"></span>
+        <span class="verdict ${verdict}">${verdictText}</span>
+      </div>
+      ${fighter(mine, "me")}
+    </div>`;
+  document.body.appendChild(layer);
+
+  // 충돌 이펙트가 터진 뒤에 VS를 지우고 판정 문구를 남긴다
+  setTimeout(() => layer.querySelector(".versus")?.classList.add("decided"), 420);
+  document.body.classList.remove("shake");
+  void document.body.offsetWidth;          // 애니메이션 재시작을 위한 리플로우
+  setTimeout(() => document.body.classList.add("shake"), 340);
+
+  // 잠깐 보여준 뒤 걷어서 손패를 다시 쓸 수 있게 한다 (매치가 끝났으면 최종 화면이 덮는다)
+  clearTimeout(showClash.timer);
+  showClash.timer = setTimeout(() => {
+    layer.classList.add("out");
+    setTimeout(() => layer.remove(), 340);
+  }, CLASH_MS);
+}
+
+function reasonHtml(detail) {
+  // 어떤 스탯을 왜 썼는지 + 속성으로 얼마가 붙었는지
+  const statName = labels.stat_labels[detail.stat] || detail.stat;
+  const ruleKey = {
+    OWN_LOWEST: "pvp_reason_own_lowest",
+    BOTH_HIGHEST: "pvp_reason_both_highest",
+    MATCH_OPP_LOWEST: "pvp_reason_match_opp_lowest",
+  }[detail.rule] || "pvp_reason_direct";
+  const bonus = detail.element_bonus
+    ? `<div class="bonus show">+${detail.element_bonus} ${esc(msg(detail.element_reason))}</div>` : "";
+  return `<div class="reason"><b>${esc(statName)} ${detail.base}</b><br>${esc(msg(ruleKey))}</div>${bonus}`;
+}
+
+function showFinal(s) {
+  if (document.querySelector(".final")) return;
+  clearTimeout(showClash.timer);
+  document.querySelector(".clashLayer")?.remove();
+  const kind = s.winner === "me" ? "win" : s.winner === "them" ? "lose" : "draw";
+  const el = document.createElement("div");
+  el.className = "final " + kind;
+  el.innerHTML = `<div class="big">${msg("web_match_final_" + (kind === "win" ? "win" : kind === "lose" ? "lose" : "draw"))}</div>
+                  <div class="sub">${msg("web_match_score", { you: s.me.wins, them: s.them.wins })}</div>`;
+  document.body.appendChild(el);
+}
+
+function startTimer(s) {
+  if (!s.my_turn || s.finished) { $("timer").hidden = true; return; }
+  $("timer").hidden = false;
+  if (!timerEnd) timerEnd = Date.now() + labels.round_timeout * 1000;
+}
+setInterval(() => {
+  if ($("timer").hidden) { timerEnd = 0; return; }
+  const left = Math.max(0, Math.ceil((timerEnd - Date.now()) / 1000));
+  $("timer").textContent = `${left}s`;
+}, 200);
+
+async function pick(heroId, el) {
+  el.classList.add("gone");
+  timerEnd = 0;
+  const res = await fetch(`/api/match/pick?id=${matchId}&token=${encodeURIComponent(token)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hero_id: heroId }),
+  });
+  if (!res.ok) el.classList.remove("gone");   // 거절되면 되돌린다 (이미 냈거나 시간이 지난 경우)
+}
+
+// 이 매치에서 쓰일 이미지를 미리 받아둔다.
+// 손패 카드에 lazy가 걸려 있으면 화면 밖 카드는 안 받아두는데, 그 카드가 판정에 나오는 순간
+// 다운로드가 시작돼 연출 도중에 그림이 늦게 뜬다. 카드는 손패에서 빠지기만 하고 새로 들어오지
+// 않으므로, 첫 스냅샷에 나온 것만 받아두면 매치 끝까지 충분하다.
+const preloaded = new Set();
+function preload(snapshot) {
+  const base = labels.image_base_url;
+  const urls = [];
+  for (const c of [...snapshot.me.remaining, ...snapshot.them.remaining]) {
+    urls.push(`${base}card/${encodeURIComponent(c.grade)}${EXT}`,
+              `${base}hero/${encodeURIComponent(c.image_name)}${EXT}`,
+              `${base}job_icon/${c.job}${EXT}`);
+    if (c.element) urls.push(`${base}element/${c.element}${EXT}`);
+  }
+  for (const key of labels.stat_order) urls.push(`${base}stat_icon/${key}${EXT}`);
+  for (const url of urls) {
+    if (preloaded.has(url)) continue;
+    preloaded.add(url);
+    const img = new Image();
+    img.src = url;
+  }
+}
+
+function apply(snapshot) {
+  // 서버의 last_round는 도전자/상대 축이고 화면은 나/상대 축이라 여기서 한 번만 바꿔둔다.
+  // 관전자는 도전자를 '나'로 본다(서버가 is_challenger=true로 내려준다).
+  const r = snapshot.last_round;
+  if (r) {
+    r.mine = snapshot.is_challenger ? r.challenger : r.opponent;
+    r.theirs = snapshot.is_challenger ? r.opponent : r.challenger;
+  }
+  state = snapshot;
+  preload(snapshot);
+  render();
+}
+
+// ── 연결: SSE 우선, 막히면 폴링으로 내려간다 ──────────────────
+let polling = null;
+function setLive(ok) {
+  $("dot").className = "dot" + (ok ? "" : " off");
+  $("status").textContent = ok ? "" : msg("web_match_lost_connection");
+}
+
+function startPolling() {
+  if (polling) return;
+  setLive(false);
+  polling = setInterval(async () => {
+    const res = await fetch(`/api/match?id=${matchId}&token=${encodeURIComponent(token)}`);
+    if (res.ok) { apply(await res.json()); setLive(true); }
+  }, 2000);
+}
+
+function connect() {
+  const source = new EventSource(`/api/match/stream?id=${matchId}&token=${encodeURIComponent(token)}`);
+  let got = false;
+  source.onmessage = (e) => { got = true; setLive(true); apply(JSON.parse(e.data)); };
+  source.onerror = () => {
+    // 첫 이벤트조차 못 받았으면 프록시가 스트림을 막고 있을 가능성이 크다 → 폴링으로 전환
+    if (!got) { source.close(); startPolling(); } else { setLive(false); }
+  };
+}
+
+(async function boot() {
+  const res = await fetch(`/api/match/labels?id=${matchId}`);
+  if (!res.ok) {
+    document.body.innerHTML = `<div class="hint" style="padding:40px">Match not found. It may have already ended.</div>`;
+    return;
+  }
+  labels = await res.json();
+  EXT = labels.image_ext || EXT;
+  $("hint").textContent = msg("match_waiting_deck");
+  connect();
+})();
+</script>
+</body>
+</html>
