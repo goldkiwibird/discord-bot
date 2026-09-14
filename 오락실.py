@@ -504,49 +504,81 @@ def describe_outcomes(outcomes: list[dict], lang: str) -> str:
 # 규칙은 전부 오락실.json의 pvp_config에 있고, 여기서는 그 표를 해석하기만 한다.
 # 디스코드/DB 없이도 검증할 수 있도록 전부 순수 함수로 둔다.
 
-def element_bonus(mine: str, theirs: str) -> int:
-    """속성 상성 가산점. 나무>땅>구름>불>나무 순환(+4), 빛>어둠(+4),
-    4원소가 빛을 상대할 때(+1), 어둠이 4원소를 상대할 때(+1). 그 외(마주보는 4원소 등)는 0."""
+def element_detail(mine: str, theirs: str) -> dict:
+    """속성 상성 가산점과 **그 이유**.
+
+    `element_bonus()`가 숫자만 돌려주던 것을 근거까지 같이 돌려주도록 나눴다 — 웹 관전 화면에서
+    "왜 +4인지"를 보여주려면 판정 시점의 이유가 필요한데, 예전에는 계산하고 그냥 버렸다.
+    `reason`은 문구 키(`pvp_reason_*`)라 3개 언어로 번역해 띄울 수 있다.
+    """
     conf = config["pvp_config"]
     cycle = conf["element_cycle"]
     basics = set(cycle)
 
     if cycle.get(mine) == theirs:
-        return conf["element_cycle_bonus"]
+        return {"bonus": conf["element_cycle_bonus"], "reason": "pvp_reason_element_cycle"}
     if mine == "light" and theirs == "dark":
-        return conf["light_over_dark_bonus"]
+        return {"bonus": conf["light_over_dark_bonus"], "reason": "pvp_reason_element_light"}
     if mine in basics and theirs == "light":
-        return conf["basic_over_light_bonus"]
+        return {"bonus": conf["basic_over_light_bonus"], "reason": "pvp_reason_element_basic"}
     if mine == "dark" and theirs in basics:
-        return conf["dark_over_basic_bonus"]
-    return 0
+        return {"bonus": conf["dark_over_basic_bonus"], "reason": "pvp_reason_element_dark"}
+    return {"bonus": 0, "reason": None}
 
-def battle_stat_value(me: dict, opp: dict) -> int:
-    """상성표에 따라 이 카드가 이번 대결에서 내밀 수치.
+def element_bonus(mine: str, theirs: str) -> int:
+    """속성 상성 가산점. 나무>땅>구름>불>나무 순환(+4), 빛>어둠(+4),
+    4원소가 빛을 상대할 때(+1), 어둠이 4원소를 상대할 때(+1). 그 외(마주보는 4원소 등)는 0."""
+    return element_detail(mine, theirs)["bonus"]
 
-    각 진영이 (내 직업, 상대 직업)으로 자기 칸을 조회하는 구조라 공격/방어 구분이 필요 없다.
-    사제전은 예외적으로 스탯 카테고리가 상대에 따라 정해진다.
+def battle_stat_detail(me: dict, opp: dict) -> dict:
+    """이번 대결에 내밀 수치와 **어떤 스탯을 왜 골랐는지**.
+
+    상성표에 따라 각 진영이 (내 직업, 상대 직업)으로 자기 칸을 조회하는 구조라
+    공격/방어 구분이 필요 없다. 사제전은 예외적으로 스탯 카테고리가 상대에 따라 정해진다.
+    `stat`은 실제로 쓰인 스탯 키, `rule`은 상성표에 적힌 규칙 이름이다.
     """
     rule = config["pvp_config"]["job_matchup"][me["job"]][opp["job"]]
 
     if rule == "OWN_LOWEST":  # 사제를 상대하는 쪽은 자기 최저 스탯을 쓴다
-        return min(me[key] for key in STAT_KEYS)
-    if rule == "BOTH_HIGHEST":  # 사제 vs 사제는 각자 자기 최고 스탯
-        return max(me[key] for key in STAT_KEYS)
-    if rule == "MATCH_OPP_LOWEST":
+        stat = min(STAT_KEYS, key=lambda key: me[key])
+    elif rule == "BOTH_HIGHEST":  # 사제 vs 사제는 각자 자기 최고 스탯
+        stat = max(STAT_KEYS, key=lambda key: me[key])
+    elif rule == "MATCH_OPP_LOWEST":
         # 사제는 상대의 최저 스탯과 같은 카테고리를 쓴다.
         # 최저가 여러 개면 그중 사제 본인 수치가 가장 높은 것을 고른다 (상대 수치는 어느 쪽이든 동일).
         lowest = min(opp[key] for key in STAT_KEYS)
-        return max(me[key] for key in STAT_KEYS if opp[key] == lowest)
-    return me[rule]
+        stat = max((key for key in STAT_KEYS if opp[key] == lowest), key=lambda key: me[key])
+    else:
+        stat = rule
+    return {"value": me[stat], "stat": stat, "rule": rule}
+
+def battle_stat_value(me: dict, opp: dict) -> int:
+    """상성표에 따라 이 카드가 이번 대결에서 내밀 수치 (근거가 필요하면 battle_stat_detail)."""
+    return battle_stat_detail(me, opp)["value"]
+
+def battle_detail(me: dict, opp: dict) -> dict:
+    """한쪽 카드의 최종 수치 = 상성 스탯 + 속성 가산, 그리고 그 근거 전부."""
+    stat = battle_stat_detail(me, opp)
+    element = element_detail(me["element"], opp["element"])
+    return {
+        "value": stat["value"] + element["bonus"],
+        "base": stat["value"],
+        "stat": stat["stat"],
+        "rule": stat["rule"],
+        "element_bonus": element["bonus"],
+        "element_reason": element["reason"],
+    }
 
 def resolve_battle(card_a: dict, card_b: dict) -> dict:
     """카드 1:1 대결. 동점은 무승부(양쪽 다 점수 없음)."""
-    value_a = battle_stat_value(card_a, card_b) + element_bonus(card_a["element"], card_b["element"])
-    value_b = battle_stat_value(card_b, card_a) + element_bonus(card_b["element"], card_a["element"])
+    detail_a = battle_detail(card_a, card_b)
+    detail_b = battle_detail(card_b, card_a)
+    value_a, value_b = detail_a["value"], detail_b["value"]
     return {
         "value_a": value_a,
         "value_b": value_b,
+        "detail_a": detail_a,     # 웹 관전 화면이 "왜 이 수치인지"를 띄우는 데 쓴다
+        "detail_b": detail_b,
         "winner": "a" if value_a > value_b else "b" if value_b > value_a else None,
     }
 
@@ -772,7 +804,8 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
     heroes = {
         hero["id"]: dict(hero)
         for hero in await conn.fetch(
-            "SELECT id, name, name_en, name_zh_tw, grade FROM hero_base_stats WHERE id = ANY($1::int[])",
+            "SELECT id, name, name_en, name_zh_tw, grade, job, element "
+            "FROM hero_base_stats WHERE id = ANY($1::int[])",
             list(hero_ids),
         )
     }
@@ -783,12 +816,15 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
         for hero_id, outcome in zip(row["hero_ids"], row["outcomes"]):
             hero = heroes.get(hero_id)
             if hero is None:      # 마스터 데이터에서 빠진 영웅 — 이름을 못 찾아도 기록은 보여준다
-                cards.append({"name": f"#{hero_id}", "image_name": "", "grade": "R", "outcome": outcome})
+                cards.append({"name": f"#{hero_id}", "image_name": "", "grade": "R",
+                              "job": "warrior", "element": "", "outcome": outcome})
                 continue
             cards.append({
                 "name": hero_display_name(hero, lang),
                 "image_name": hero["name"],   # 이미지 파일명은 항상 한글 원본
                 "grade": hero["grade"],
+                "job": hero["job"],           # 웹에서 카드 그림을 조립할 때 직업/속성 아이콘이 필요하다
+                "element": hero["element"],
                 "outcome": outcome,           # new / enhance / maxed
             })
         history.append({
@@ -938,38 +974,27 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
         await interaction.followup.send(get_msg(lang, "summon_insufficient", cost=cost, points=f"{points:,}"), ephemeral=True)
         return
 
-    cards = build_cards(outcomes, lang)
     embed = discord.Embed(
         title=get_msg(lang, "summon_result_title"),
         description=describe_outcomes(outcomes, lang) + "\n\n" + get_msg(lang, "summon_points_left", points=f"{points:,}"),
         color=discord.Color.gold(),
     )
 
-    # 이미지 합성은 CPU 작업이라 별도 스레드에서 돌린다 (봇 하트비트가 밀리지 않도록).
-    # **여기서 터져도 예외를 그대로 올리면 안 된다**: 이 시점엔 포인트 차감과 카드 지급이 이미
-    # DB에 반영돼 있어서, 명령어가 실패로 끝나면 유저는 포인트만 쓰고 무엇을 뽑았는지조차 못 본다.
-    # 그림은 포기하더라도 뽑은 결과(텍스트)는 반드시 전달한다 (에셋 버킷 403으로 실제로 겪음).
-    try:
-        if len(cards) == 1:
-            image = await render_in_thread(bot.renderer.render_card, cards[0])
-        else:
-            image = await render_in_thread(bot.renderer.render_grid, cards)
-    except Exception:
-        traceback.print_exc()
-        image = None
+    # 카드 그림은 디스코드에 붙이지 않고 웹 이력 화면에서 보여준다.
+    # 서버에서 PNG를 합성하면 0.1 CPU인 Render에서 10연 기준 1초 넘게 잡아먹는데(실측),
+    # 웹은 브라우저가 그리므로 서버 비용이 사실상 0이고 확대/필터 같은 것도 공짜로 얻는다.
+    # 링크 전용 View는 custom_id가 없어 discord.py의 view store에 남지 않으므로
+    # timeout=None을 줘도 누수가 없고, 소환마다 타이머 태스크가 생기지도 않는다 (2.7.1 소스로 확인).
+    token = issue_deck_token(interaction.user.id, lang)
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.link,
+        label=get_msg(lang, "summon_view_history"),
+        url=f"{web_base_url()}/deck?token={token}#summons",
+    ))
 
     # 소환 결과는 DM이 아니라 명령어를 실행한 채널에 본인에게만 보이는(ephemeral) 메시지로 전달
-    if image is None:
-        note = get_msg(lang, "summon_image_failed")
-        if note:
-            embed.description += "\n\n" + note
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        return
-
-    embed.set_image(url="attachment://summon.png")
-    await interaction.followup.send(
-        embed=embed, file=discord.File(png_bytes(image), filename="summon.png"), ephemeral=True
-    )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 @bot.tree.command(
     name=app_commands.locale_str("summon"),
@@ -1032,6 +1057,7 @@ async def handle_deck_data(request):
     data["deck_count"] = deck_conf["deck_count"]
     data["deck_size"] = deck_conf["deck_size"]
     data["image_base_url"] = config["card_config"]["image_base_url"]
+    data["image_ext"] = config["card_config"].get("image_ext", ".webp")
     data["stat_order"] = list(config["card_config"]["stat_order"])
     data["grades"] = ["R", "R+", "SR", "SSR"]
     data["jobs"] = list(config["card_config"]["job_order"])
@@ -1175,6 +1201,172 @@ async def handle_health(request):
         traceback.print_exc()
         return web.json_response({"status": "error", "error": type(e).__name__}, status=503)
 
+def resolve_match_view(request) -> "tuple[PvpMatch, int | None] | None":
+    """요청이 가리키는 매치와 '보는 사람'을 찾는다.
+
+    토큰이 있으면 그 참가자 관점(아래쪽이 본인, 카드 제출 가능), 없으면 관전자(읽기 전용).
+    관전은 링크만 있으면 되므로 토큰을 요구하지 않는다 — 양쪽 덱은 1라운드 시작과 동시에
+    규칙상 전부 공개되는 정보라 숨길 게 없다.
+    """
+    try:
+        match_id = int(request.query.get("id", ""))
+    except ValueError:
+        return None
+    match = live_matches.get(match_id)
+    if match is None:
+        return None
+
+    entry = match_tokens.get(request.query.get("token", ""))
+    if entry and entry[0] == match_id:
+        return match, entry[1]
+    return match, None
+
+
+async def handle_match_page(request):
+    with open("match_page.html", "r", encoding="utf-8") as f:
+        return web.Response(text=f.read(), content_type="text/html")
+
+
+async def handle_match_state(request):
+    """SSE가 막혔을 때 쓰는 폴링용 단발 조회 (브라우저가 자동으로 이쪽으로 내려온다)."""
+    resolved = resolve_match_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    match, viewer_id = resolved
+    return web.json_response(match.snapshot(viewer_id))
+
+
+async def handle_match_labels(request):
+    """대전 화면이 처음 한 번만 받아가는 정적 자료 (문구·라벨·이미지 주소).
+
+    상태 스냅샷에 같이 넣으면 이벤트마다 1.5KB씩 따라다니므로 따로 뺐다.
+    언어는 매치에 기록된 값을 쓴다(도전자가 명령어를 실행한 채널 언어).
+    """
+    resolved = resolve_match_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    match, _ = resolved
+    lang = match.lang
+
+    return web.json_response({
+        "image_base_url": config["card_config"]["image_base_url"],
+        "image_ext": config["card_config"].get("image_ext", ".webp"),
+        "stat_order": list(config["card_config"]["stat_order"]),
+        "stat_labels": {key: get_msg(lang, f"stat_{key}") for key in STAT_KEYS},
+        "job_labels": {key: get_msg(lang, f"job_{key}")
+                       for key in config["card_config"]["job_order"]},
+        "element_labels": {key: get_msg(lang, f"element_{key}")
+                           for key in config["card_config"]["element_order"]},
+        "round_timeout": config["pvp_config"]["round_pick_timeout_seconds"],
+        "messages": {
+            key: get_msg(lang, key)
+            for key in (
+                "match_vs", "match_waiting_deck", "match_waiting_pick", "match_opponent_deck",
+                "web_match_spectators", "web_match_pick_prompt", "web_match_your_turn",
+                "web_match_round", "web_match_score", "web_match_win", "web_match_lose",
+                "web_match_draw", "web_match_final_win", "web_match_final_lose",
+                "web_match_final_draw", "web_match_ended", "web_match_lost_connection",
+                "web_match_not_found", "web_match_wager",
+                "pvp_reason_own_lowest", "pvp_reason_both_highest", "pvp_reason_match_opp_lowest",
+                "pvp_reason_direct", "pvp_reason_element_cycle", "pvp_reason_element_light",
+                "pvp_reason_element_basic", "pvp_reason_element_dark",
+            )
+        },
+    })
+
+
+async def handle_match_stream(request):
+    """매치 상태를 실시간으로 밀어주는 SSE 스트림.
+
+    Cloudflare/nginx가 응답을 모아뒀다 내보내면 실시간성이 깨지므로 `X-Accel-Buffering: no`를
+    붙이고, 유휴 연결이 끊기지 않도록 주기적으로 주석 하트비트(`: ping`)를 보낸다.
+    그래도 막히는 환경이 있을 수 있어 클라이언트는 폴링으로 내려갈 수 있게 해뒀다.
+    """
+    resolved = resolve_match_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    match, viewer_id = resolved
+
+    is_player = viewer_id in match.sides
+    if not is_player and match.spectators >= config["pvp_config"].get("max_spectators", 50):
+        return web.json_response({"error": "spectators_full"}, status=429)
+
+    response = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    })
+    await response.prepare(request)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=32)
+    match.subscribers.add(queue)
+    if is_player:
+        match.web_sides.add(viewer_id)
+    else:
+        match.spectators += 1
+        await match.broadcast()      # 관전자 수가 바뀌었으니 모두에게 알린다
+
+    heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
+    try:
+        await response.write(_sse(match.snapshot(viewer_id)))
+        while not match.finished or not queue.empty():
+            try:
+                await asyncio.wait_for(queue.get(), heartbeat)
+            except asyncio.TimeoutError:
+                await response.write(b": ping\n\n")   # 버퍼를 밀어내고 연결도 유지
+                continue
+            await response.write(_sse(match.snapshot(viewer_id)))
+    except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
+        pass
+    finally:
+        match.subscribers.discard(queue)
+        if is_player:
+            match.web_sides.discard(viewer_id)
+        else:
+            match.spectators = max(0, match.spectators - 1)
+            if not match.finished:
+                await match.broadcast()
+    return response
+
+
+def _sse(payload: dict) -> bytes:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def handle_match_pick(request):
+    """웹에서 카드를 낸다. 디스코드 선택 메뉴와 **같은 경로를 타야** 경합이 안 난다."""
+    resolved = resolve_match_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    match, viewer_id = resolved
+    if viewer_id not in match.sides:
+        return web.json_response({"error": "not_a_player"}, status=403)
+
+    try:
+        hero_id = int((await request.json()).get("hero_id"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return web.json_response({"error": "bad_request"}, status=400)
+
+    side = match.sides[viewer_id]
+    async with match.lock:
+        if match.finished or side.pick is not None:
+            # 이미 냈거나(디스코드에서 먼저 골랐거나 타임아웃 자동선택) 매치가 끝난 상태
+            return web.json_response({"error": "already_picked"}, status=409)
+        card = next((c for c in side.remaining if c["hero_id"] == hero_id), None)
+        if card is None:
+            return web.json_response({"error": "not_in_hand"}, status=400)
+        side.pick = card
+
+    await match.broadcast()
+
+    async with match.lock:
+        them = match.other(viewer_id)
+        if them.pick is not None and not match.finished:
+            await run_match_step(match, resolve_round(match))
+    return web.json_response({"ok": True})
+
+
 async def start_web_server():
     """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다.
 
@@ -1188,6 +1380,11 @@ async def start_web_server():
     app.router.add_get("/api/deck", handle_deck_data)
     app.router.add_get("/api/history", handle_match_history)
     app.router.add_get("/api/summons", handle_summon_history)
+    app.router.add_get("/match", handle_match_page)
+    app.router.add_get("/api/match", handle_match_state)
+    app.router.add_get("/api/match/labels", handle_match_labels)
+    app.router.add_get("/api/match/stream", handle_match_stream)
+    app.router.add_post("/api/match/pick", handle_match_pick)
     app.router.add_post("/api/deck", handle_deck_save)
     app.router.add_post("/api/deck/reset-enhance", handle_deck_reset_enhance)
 
@@ -1268,11 +1465,105 @@ class PvpMatch:
         self.round_no = 0
         self.finished = False
         self.lock = asyncio.Lock()  # 두 사람이 동시에 눌러도 라운드가 두 번 진행되지 않도록
+        # 공개 대결이면 관전 링크를 뿌릴 채널 (비공개면 None — 링크는 각자 DM으로만 간다)
+        self.public_channel = None
+        # 웹 관전/조작 화면에 상태를 밀어줄 SSE 구독자들. 참가자와 관전자가 같이 들어 있다.
+        # 실측으로 연결 1개가 156KB라 수천 개까지 버티지만, 관전자는 상한을 둔다.
+        self.subscribers: set[asyncio.Queue] = set()
+        self.spectators = 0          # 참가자를 뺀 순수 관전자 수 (화면에 "관전자 N명"으로 표시)
+        self.last_round: dict | None = None   # 직전 라운드 판정 결과 + 근거 (이펙트용)
+        self.winner_id: int | None = None
+        self.end_reason: str | None = None
+        self.web_sides: set[int] = set()      # 웹 화면을 열어둔 참가자 id
+
+    def snapshot(self, viewer_id: int | None) -> dict:
+        """웹 화면이 그릴 수 있는 형태로 현재 상태를 통째로 담아준다.
+
+        증분(diff)이 아니라 매번 전체 상태를 보낸다 — 한 판의 상태가 몇 KB밖에 안 되고(실측
+        이벤트 전파 CPU는 400연결에서도 측정 하한 미만), 중간에 이벤트를 놓친 클라이언트나
+        새로 들어온 관전자가 알아서 맞춰지므로 재동기화 로직이 아예 필요 없다.
+
+        `viewer_id`가 참가자면 그 사람이 '아래쪽', 상대가 '위쪽'이 된다. 관전자(None)는
+        도전자를 아래쪽에 둔다.
+        """
+        me = self.sides.get(viewer_id) or self.challenger
+        them = self.other(me.user.id)
+
+        def side_state(side: PvpSide, reveal: bool) -> dict:
+            # 덱을 아직 안 골랐으면 카드가 없다. 고른 뒤에는 양쪽 덱이 규칙상 전부 공개된다.
+            cards = [web_card(c) for c in side.remaining] if reveal else []
+            return {
+                "name": side.user.display_name,
+                "wins": side.wins,
+                "deck_chosen": side.deck_number is not None,
+                "remaining": cards,
+                "remaining_count": len(side.remaining),
+                "picked": side.pick is not None,
+                "pick": web_card(side.pick) if (side.pick and self.last_round) else None,
+            }
+
+        both_chose = self.challenger.deck_number is not None and self.opponent.deck_number is not None
+        return {
+            "match_id": self.match_id,
+            "round": self.round_no,
+            "wager": self.wager,
+            "finished": self.finished,
+            "phase": ("finished" if self.finished
+                      else "deck" if not both_chose
+                      else "round"),
+            "me": side_state(me, both_chose),
+            "them": side_state(them, both_chose),
+            "is_player": viewer_id in self.sides,
+            # last_round는 도전자/상대 축으로 담기므로, 화면이 '나/상대' 축으로 바꿀 수 있게 알려준다
+            "is_challenger": me.user.id == self.challenger.user.id,
+            "my_turn": viewer_id in self.sides and self.sides[viewer_id].pick is None and both_chose,
+            "spectators": self.spectators,
+            "last_round": self.last_round,
+            "winner": ("me" if self.winner_id == me.user.id
+                       else "them" if self.winner_id == them.user.id
+                       else "draw" if self.finished and not self.end_reason else None),
+            "end_reason": self.end_reason,
+            "deck_size": config["deck_config"]["deck_size"],
+        }
+
+    async def broadcast(self) -> None:
+        """모든 구독자에게 현재 상태를 밀어준다.
+
+        구독자마다 보는 관점(누가 아래쪽인지)이 달라서 큐에는 viewer_id를 같이 담아두고
+        각자 자기 관점의 스냅샷을 만들어 보낸다.
+        """
+        for queue in list(self.subscribers):
+            try:
+                queue.put_nowait(None)      # None = "상태가 바뀌었으니 새로 만들어 보내라"
+            except asyncio.QueueFull:
+                pass
 
     def other(self, user_id: int) -> PvpSide:
         return self.opponent if user_id == self.challenger.user.id else self.challenger
 
 active_matches: dict[int, PvpMatch] = {}  # user_id -> 참여 중인 매치
+live_matches: dict[int, PvpMatch] = {}   # match_id -> 매치 (웹 관전/조작이 id로 찾는다)
+# 웹에서 카드를 낼 수 있는 권한. 관전 링크는 토큰이 없어 읽기 전용이 된다.
+match_tokens: dict[str, tuple[int, int]] = {}   # token -> (match_id, user_id)
+
+
+def issue_match_token(match_id: int, user_id: int) -> str:
+    token = secrets.token_urlsafe(18)
+    match_tokens[token] = (match_id, user_id)
+    return token
+
+
+def web_card(card: dict) -> dict:
+    """전투 카드 dict를 웹 화면이 쓰는 형태로. 이미지 파일명은 한글 원본 그대로 넘긴다."""
+    return {
+        "hero_id": card["hero_id"],
+        "name": card["display_name"],
+        "image_name": card["name"],
+        "grade": card["grade"],
+        "job": card["job"],
+        "element": card["element"],
+        "stats": {key: card[key] for key in STAT_KEYS},
+    }
 
 def to_card_data(card: dict) -> CardData:
     """fetch_battle_decks()가 내려주는 카드 dict를 카드 렌더러 입력으로 변환.
@@ -1337,6 +1628,8 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
     if match.finished:
         return
     match.finished = True
+    match.winner_id = winner_id
+    match.end_reason = reason_key
 
     try:
         async with bot.pool.acquire() as conn:
@@ -1346,6 +1639,12 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
                 await settle_match(conn, match.match_id, winner_id)
     except Exception as e:
         print(f"⚠️ 매치 정산 중 DB 오류: {e}")
+
+    await match.broadcast()          # 웹 화면에 승패 연출을 먼저 띄운다
+    live_matches.pop(match.match_id, None)
+    for token, (mid, _) in list(match_tokens.items()):
+        if mid == match.match_id:
+            del match_tokens[token]
 
     for side in (match.challenger, match.opponent):
         active_matches.pop(side.user.id, None)
@@ -1423,6 +1722,17 @@ async def resolve_round(match: PvpMatch) -> None:
     elif result["winner"] == "b":
         b.wins += 1
 
+    # 웹 화면이 "무슨 카드로 얼마가 나왔고 왜 그런지"를 연출할 수 있도록 판정 결과를 남긴다.
+    # 카드가 remaining에서 빠지기 전에 담아야 한다.
+    match.last_round = {
+        "round": match.round_no,
+        "challenger": {"card": web_card(a.pick), **result["detail_a"],
+                       "won": result["winner"] == "a"},
+        "opponent": {"card": web_card(b.pick), **result["detail_b"],
+                     "won": result["winner"] == "b"},
+        "draw": result["winner"] is None,
+    }
+
     for side in (a, b):
         side.remaining = [c for c in side.remaining if c["hero_id"] != side.pick["hero_id"]]
 
@@ -1445,17 +1755,15 @@ async def resolve_round(match: PvpMatch) -> None:
         embed.add_field(name=get_msg(match.lang, "match_score", you=side.wins, them=them.wins),
                         value="​", inline=False)
 
-        # 내 카드 vs 상대 카드를 나란히 놓고 그 사이에 이번 판정에 쓰인 스탯값을 이미지로 보여준다
-        image = await render_in_thread(
-            bot.renderer.render_matchup,
-            to_card_data(side.pick), result[value_key],
-            to_card_data(them.pick), result[other_key],
-        )
-        embed.set_image(url="attachment://matchup.png")
+        # 카드 그림은 웹 관전 화면(match_page.html)이 보여준다 — 디스코드에는 텍스트만 보낸다.
+        # 서버 합성은 0.1 CPU인 Render에서 매치당 344ms를 잡아먹었는데, 그게 동시 매치 수의
+        # 유일한 병목이었다. 웹으로 옮기면서 그 비용이 사라졌다.
         try:
-            await side.user.send(embed=embed, file=discord.File(png_bytes(image), filename="matchup.png"))
+            await side.user.send(embed=embed)
         except discord.HTTPException:
             pass
+
+    await match.broadcast()
 
     if a.remaining:
         await start_round(match)
@@ -1499,6 +1807,7 @@ class CardPickView(discord.ui.View):
         embed = discord.Embed(description=get_msg(self.match.lang, "match_waiting_pick"),
                               color=discord.Color.blurple())
         await interaction.response.edit_message(embed=embed, view=None)
+        await self.match.broadcast()   # 디스코드에서 낸 카드도 웹 화면에 바로 보이도록
 
         async with self.match.lock:
             them = self.match.other(self.side.user.id)
@@ -1527,17 +1836,32 @@ class MatchInviteView(discord.ui.View):
     """도전장 DM에 붙는 수락/거부 버튼."""
 
     def __init__(self, match_id: int, challenger: discord.User, opponent: discord.User,
-                 wager: int, lang: str):
+                 wager: int, lang: str, public_channel=None):
         super().__init__(timeout=config["pvp_config"]["invite_timeout_seconds"])
         self.match_id, self.challenger, self.opponent = match_id, challenger, opponent
         self.wager, self.lang = wager, lang
         self.answered = False
+        # 공개 대결이면 관전 링크를 뿌릴 채널. 비공개면 None이고 링크는 각자 DM으로 간다.
+        self.public_channel = public_channel
 
         accept = discord.ui.Button(label=get_msg(lang, "match_accept"), style=discord.ButtonStyle.success)
         decline = discord.ui.Button(label=get_msg(lang, "match_decline"), style=discord.ButtonStyle.secondary)
         accept.callback, decline.callback = self.on_accept, self.on_decline
         self.add_item(accept)
         self.add_item(decline)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """도전받은 본인만 수락/거부할 수 있다.
+
+        **공개 채널에 도전장을 뿌리면 이 검사가 없을 때 아무나 누를 수 있다** — 남의 이름으로
+        수락되면서 그 사람 포인트가 판돈으로 묶인다. DM으로만 보내던 시절엔 메시지 자체가
+        본인에게만 보여서 문제가 안 됐지만, 공개 옵션이 생긴 이상 반드시 필요하다.
+        """
+        if interaction.user.id == self.opponent.id:
+            return True
+        await interaction.response.send_message(
+            get_msg(self.lang, "match_err_not_yours"), ephemeral=True)
+        return False
 
     async def on_accept(self, interaction: discord.Interaction):
         self.answered = True
@@ -1560,6 +1884,8 @@ class MatchInviteView(discord.ui.View):
         challenger_side = PvpSide(self.challenger, decks[self.challenger.id])
         opponent_side = PvpSide(self.opponent, decks[self.opponent.id])
         match = PvpMatch(self.match_id, challenger_side, opponent_side, self.wager, self.lang)
+        match.public_channel = self.public_channel
+        live_matches[self.match_id] = match   # 웹이 match_id로 찾아올 수 있게 등록
 
         # 상대(수락한 쪽)의 화면은 방금 누른 도전장 메시지를 그대로 이어서 쓴다
         opponent_side.message = await interaction.original_response()
@@ -1577,6 +1903,28 @@ class MatchInviteView(discord.ui.View):
                                                         opponent=self.challenger.display_name)),
                 view=None)
             return
+
+        # 웹 화면 링크. 참가자에게는 **토큰이 붙은 링크**(카드 제출 가능)를 DM으로 주고,
+        # 공개 대결이면 채널에 **토큰 없는 링크**(읽기 전용 관전)를 한 번 더 뿌린다.
+        base = web_base_url()
+        for side in (challenger_side, opponent_side):
+            token = issue_match_token(self.match_id, side.user.id)
+            try:
+                await side.user.send(get_msg(
+                    self.lang, "match_link_player",
+                    url=f"{base}/match?id={self.match_id}&token={token}"))
+            except discord.HTTPException:
+                pass   # DM이 막혀도 디스코드 선택 메뉴로 진행할 수 있으므로 매치는 계속한다
+
+        if self.public_channel is not None:
+            try:
+                await self.public_channel.send(get_msg(
+                    self.lang, "match_link_spectate",
+                    challenger=self.challenger.display_name,
+                    opponent=self.opponent.display_name,
+                    url=f"{base}/match?id={self.match_id}"))
+            except discord.HTTPException:
+                pass
 
         deck_timeout = config["pvp_config"]["pick_timeout_seconds"]
         for side in (challenger_side, opponent_side):
@@ -1652,20 +2000,24 @@ class DeckPickView(discord.ui.View):
             await run_match_step(self.match, self.reveal_and_start())
 
     async def reveal_and_start(self) -> None:
-        """상대 덱을 이미지로 공개하고 1라운드를 시작한다 (run_match_step이 감싸서 호출)."""
+        """상대 덱이 공개됐음을 알리고 1라운드를 시작한다 (run_match_step이 감싸서 호출).
+
+        카드 그림은 웹 관전 화면이 보여주므로 디스코드에는 안내 문구만 보낸다.
+        """
+        await self.match.broadcast()   # 양쪽 덱이 정해졌으니 웹 화면에 카드가 깔린다
         for side in (self.match.challenger, self.match.opponent):
             other = self.match.other(side.user.id)
-            cards = [to_card_data(card) for card in other.remaining]
-            image = await render_in_thread(bot.renderer.render_rows, cards)
             embed = discord.Embed(
                 title=get_msg(self.match.lang, "match_vs",
                               challenger=self.match.challenger.user.display_name,
                               opponent=self.match.opponent.user.display_name),
-                description=get_msg(self.match.lang, "match_opponent_deck"),
+                description=get_msg(self.match.lang, "match_opponent_deck") + "\n"
+                + ", ".join(c["display_name"] for c in other.remaining),
                 color=discord.Color.blurple())
-            embed.set_image(url="attachment://opponent_deck.png")
-            await side.user.send(embed=embed,
-                                 file=discord.File(png_bytes(image), filename="opponent_deck.png"))
+            try:
+                await side.user.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
         await start_round(self.match)
 
@@ -1674,7 +2026,7 @@ class DeckPickView(discord.ui.View):
             await finish_match(self.match, None, reason_key="match_cancelled_timeout")
 
 async def start_match(interaction: discord.Interaction, opponent: discord.Member,
-                      wager: int | None) -> None:
+                      wager: int | None, public: bool = False) -> None:
     """도전장을 만들어 상대 DM으로 보낸다. `wager=None`이면 친선전(판돈 없음).
 
     판돈전(`/match`)과 친선전(`/friendly`)을 **별도 명령어로 나눈 이유**: 디스코드 슬래시 명령은
@@ -1724,30 +2076,49 @@ async def start_match(interaction: discord.Interaction, opponent: discord.Member
     if wager:
         embed.set_footer(text=get_msg(lang, "match_invite_footer", wager=wager))
 
-    try:
-        await opponent.send(embed=embed,
-                            view=MatchInviteView(match_id, interaction.user, opponent, wager, lang))
-    except discord.Forbidden:
-        async with bot.pool.acquire() as conn:
-            await cancel_match(conn, match_id)
-        return await fail("match_err_dm_opponent", opponent=opponent.display_name)
+    # 공개 대결이면 명령어를 실행한 채널에 도전장을 한 번만 뿌린다 (관전자가 보고 따라올 수 있게).
+    # 비공개면 지금까지처럼 상대 DM으로만 간다.
+    # 공개 채널에서는 아무나 버튼을 누를 수 있으므로 MatchInviteView.interaction_check가
+    # 도전받은 본인인지 반드시 확인한다 — 없으면 남의 판돈이 묶인다.
+    channel = interaction.channel if public else None
+    view = MatchInviteView(match_id, interaction.user, opponent, wager, lang, channel)
+
+    if public:
+        embed.description = (f"{opponent.mention}\n" + embed.description)
+        try:
+            await interaction.channel.send(embed=embed, view=view)
+        except (discord.Forbidden, AttributeError):
+            # 채널에 쓸 권한이 없거나(DM에서 실행 등) 채널이 없으면 공개로 진행할 수 없다
+            async with bot.pool.acquire() as conn:
+                await cancel_match(conn, match_id)
+            return await fail("match_err_channel")
+    else:
+        try:
+            await opponent.send(embed=embed, view=view)
+        except discord.Forbidden:
+            async with bot.pool.acquire() as conn:
+                await cancel_match(conn, match_id)
+            return await fail("match_err_dm_opponent", opponent=opponent.display_name)
 
     await interaction.followup.send(
-        get_msg(lang, "match_sent", opponent=opponent.display_name), ephemeral=True)
+        get_msg(lang, "match_sent_public" if public else "match_sent",
+                opponent=opponent.display_name), ephemeral=True)
 
 @bot.tree.command(
     name=app_commands.locale_str("match"),
     description=app_commands.locale_str(config["commands"]["match"]["description"]),
 )
-async def match(interaction: discord.Interaction, opponent: discord.Member, wager: int):
-    await start_match(interaction, opponent, wager)
+async def match(interaction: discord.Interaction, opponent: discord.Member, wager: int,
+                public: bool = False):
+    await start_match(interaction, opponent, wager, public)
 
 @bot.tree.command(
     name=app_commands.locale_str("friendly"),
     description=app_commands.locale_str(config["commands"]["friendly"]["description"]),
 )
-async def friendly(interaction: discord.Interaction, opponent: discord.Member):
-    await start_match(interaction, opponent, None)
+async def friendly(interaction: discord.Interaction, opponent: discord.Member,
+                   public: bool = False):
+    await start_match(interaction, opponent, None, public)
 
 def main():
     token = os.environ["BOT_TOKEN"]
