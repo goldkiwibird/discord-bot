@@ -19,6 +19,16 @@ from dotenv import load_dotenv
 
 from card_renderer import CardData, CardRenderer, to_png_bytes
 
+
+def png_bytes(image):
+    """설정된 압축 강도로 PNG를 만든다 (card_config.png_compress_level, 기본 1).
+
+    0.1 CPU인 Render 무료 인스턴스에서는 PNG 압축이 렌더 자체보다 훨씬 비싸서,
+    이 값 하나로 소환/PVP 응답 속도가 몇 배씩 달라진다. 용량과 속도를 맞바꾸는 손잡이라
+    설정으로 빼 둔다 (0=무압축·가장 빠름 … 9=최대압축·가장 느림).
+    """
+    return to_png_bytes(image, config["card_config"].get("png_compress_level", 1))
+
 # 윈도우 콘솔 기본 인코딩(cp949)이 이모지 등 일부 유니코드 문자를 못 그려서 print()가 죽는 걸 방지
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -38,6 +48,21 @@ def load_config() -> dict:
 # 슬래시 명령어 데코레이터가 모듈 로드 시점에 바로 실행되기 때문에,
 # on_ready가 아니라 여기서 동기적으로 한 번 읽어들인다.
 config = load_config()
+
+# 동시에 돌아가는 이미지 합성 개수 상한. Render 무료 인스턴스는 **0.1 CPU**라 여러 개를 동시에
+# 돌려도 총 처리량이 늘지 않는다(CPU가 이미 한계). 반면 동시에 돌린 만큼 큰 이미지 버퍼가 겹쳐서
+# **메모리만 선형으로 늘어난다** — 실측으로 10연 소환 1건당 약 13MB가 더 잡히고, asyncio.to_thread의
+# 기본 스레드 수는 24개라 상한이 없으면 순간적으로 300MB가 더 붙어 512MB 한도를 넘길 수 있다.
+# 그래서 개수를 묶는다. 총 대기시간은 어차피 CPU가 정하므로 느려지지 않고, 오히려 먼저 온 요청이
+# 먼저 끝나서 평균 대기는 짧아진다. 1이 아니라 2인 이유: 에셋을 버킷에서 받느라 네트워크에서
+# 멈춘 렌더 하나가 나머지를 전부 막지 않게 하기 위함(콜드 캐시일 때 최대 10초까지 기다린다).
+render_semaphore = asyncio.Semaphore(config["card_config"].get("max_concurrent_renders", 2))
+
+
+async def render_in_thread(fn, *args):
+    """이미지 합성을 별도 스레드에서 돌리되, 동시 실행 개수를 render_semaphore로 제한한다."""
+    async with render_semaphore:
+        return await asyncio.to_thread(fn, *args)
 
 def today_kst() -> date:
     return datetime.now(KST).date()
@@ -786,9 +811,9 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
     # 그림은 포기하더라도 뽑은 결과(텍스트)는 반드시 전달한다 (에셋 버킷 403으로 실제로 겪음).
     try:
         if len(cards) == 1:
-            image = await asyncio.to_thread(bot.renderer.render_card, cards[0])
+            image = await render_in_thread(bot.renderer.render_card, cards[0])
         else:
-            image = await asyncio.to_thread(bot.renderer.render_grid, cards)
+            image = await render_in_thread(bot.renderer.render_grid, cards)
     except Exception:
         traceback.print_exc()
         image = None
@@ -803,7 +828,7 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
 
     embed.set_image(url="attachment://summon.png")
     await interaction.followup.send(
-        embed=embed, file=discord.File(to_png_bytes(image), filename="summon.png"), ephemeral=True
+        embed=embed, file=discord.File(png_bytes(image), filename="summon.png"), ephemeral=True
     )
 
 @bot.tree.command(
@@ -1238,14 +1263,14 @@ async def resolve_round(match: PvpMatch) -> None:
                         value="​", inline=False)
 
         # 내 카드 vs 상대 카드를 나란히 놓고 그 사이에 이번 판정에 쓰인 스탯값을 이미지로 보여준다
-        image = await asyncio.to_thread(
+        image = await render_in_thread(
             bot.renderer.render_matchup,
             to_card_data(side.pick), result[value_key],
             to_card_data(them.pick), result[other_key],
         )
         embed.set_image(url="attachment://matchup.png")
         try:
-            await side.user.send(embed=embed, file=discord.File(to_png_bytes(image), filename="matchup.png"))
+            await side.user.send(embed=embed, file=discord.File(png_bytes(image), filename="matchup.png"))
         except discord.HTTPException:
             pass
 
@@ -1448,7 +1473,7 @@ class DeckPickView(discord.ui.View):
         for side in (self.match.challenger, self.match.opponent):
             other = self.match.other(side.user.id)
             cards = [to_card_data(card) for card in other.remaining]
-            image = await asyncio.to_thread(bot.renderer.render_rows, cards)
+            image = await render_in_thread(bot.renderer.render_rows, cards)
             embed = discord.Embed(
                 title=get_msg(self.match.lang, "match_vs",
                               challenger=self.match.challenger.user.display_name,
@@ -1457,7 +1482,7 @@ class DeckPickView(discord.ui.View):
                 color=discord.Color.blurple())
             embed.set_image(url="attachment://opponent_deck.png")
             await side.user.send(embed=embed,
-                                 file=discord.File(to_png_bytes(image), filename="opponent_deck.png"))
+                                 file=discord.File(png_bytes(image), filename="opponent_deck.png"))
 
         await start_round(self.match)
 
