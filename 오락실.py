@@ -6,6 +6,7 @@ import random
 import secrets
 import sys
 import time
+import traceback
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -914,32 +915,45 @@ async def handle_health(request):
 
     DB 조회에 타임아웃을 거는 이유: DB가 응답을 안 하면 이 요청이 영영 안 끝나고,
     그러면 UptimeRobot 쪽에서는 "죽었다"가 아니라 그냥 느린 것처럼 보여 알림이 늦어진다.
+
+    **이 핸들러는 어떤 경우에도 예외를 밖으로 던지지 않는다.** 예외가 나가면 aiohttp가 500을
+    주는데, 그러면 UptimeRobot 화면에서 "봇이 아픈 것"과 "상태 확인 코드 자체가 깨진 것"을
+    구분할 수 없다 (설정 키 하나가 없어서 500이 나고 계속 빨간불이 뜬 적이 있다). 대신 503과
+    함께 예외 타입 이름을 돌려줘서 로그를 안 봐도 원인을 좁힐 수 있게 한다 — 예외 메시지 전문은
+    접속 문자열 같은 게 섞일 수 있으므로 공개 엔드포인트에는 타입 이름만 싣는다
+    (전체 스택은 Render 로그로 보낸다).
     """
-    timeout = config["web_config"]["health_db_timeout_seconds"]
+    try:
+        # 설정에 키가 없어도 상태 확인 자체는 돌아가야 하므로 기본값을 둔다.
+        # 코드보다 JSON이 늦게 배포되는 상황에서 이 엔드포인트까지 같이 죽으면 안 된다.
+        timeout = config["web_config"].get("health_db_timeout_seconds", 3)
 
-    async def probe_db():
-        async with bot.pool.acquire() as conn:
-            return await conn.fetchval("SELECT 1")
+        async def probe_db():
+            async with bot.pool.acquire() as conn:
+                return await conn.fetchval("SELECT 1")
 
-    database = False
-    if bot.pool is not None:
-        try:
-            database = await asyncio.wait_for(probe_db(), timeout) == 1
-        except (asyncpg.PostgresError, OSError, asyncio.TimeoutError):
-            database = False
+        database = False
+        if bot.pool is not None:
+            try:
+                database = await asyncio.wait_for(probe_db(), timeout) == 1
+            except (asyncpg.PostgresError, OSError, asyncio.TimeoutError):
+                database = False
 
-    discord_ok = bot.is_ready() and not bot.is_closed()
-    healthy = discord_ok and database
-    return web.json_response(
-        {
-            "status": "ok" if healthy else "degraded",
-            "discord": discord_ok,
-            "database": database,
-            # 연결 전에는 latency가 NaN이라 그대로 넣으면 JSON으로 직렬화할 수 없다
-            "latency_ms": None if math.isnan(bot.latency) else round(bot.latency * 1000),
-        },
-        status=200 if healthy else 503,
-    )
+        discord_ok = bot.is_ready() and not bot.is_closed()
+        healthy = discord_ok and database
+        return web.json_response(
+            {
+                "status": "ok" if healthy else "degraded",
+                "discord": discord_ok,
+                "database": database,
+                # 연결 전에는 latency가 NaN이라 그대로 넣으면 JSON으로 직렬화할 수 없다
+                "latency_ms": None if math.isnan(bot.latency) else round(bot.latency * 1000),
+            },
+            status=200 if healthy else 503,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return web.json_response({"status": "error", "error": type(e).__name__}, status=503)
 
 async def start_web_server():
     """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다.
