@@ -1327,13 +1327,17 @@ async def handle_match_deck(request):
         if number not in side.decks:
             return web.json_response({"error": "no_such_deck"}, status=400)
         side.choose_deck(number)
+        # **"둘 다 골랐다"는 판단을 값을 넣는 이 잠금 안에서 해야 한다.** 밖에서 다시 보면
+        # 두 사람이 동시에 고른 경우 양쪽 요청이 모두 "상대도 골랐다"를 보고 1라운드를
+        # 두 번 시작해버린다 (라운드 번호가 2로 건너뛰고 타이머도 두 개가 된다).
+        both_chosen = match.other(viewer_id).deck_number is not None and not match.finished
 
     await match.broadcast()
 
-    async with match.lock:
-        them = match.other(viewer_id)
-        if them.deck_number is not None and not match.finished:
-            await run_match_step(match, start_round(match))
+    if both_chosen:
+        async with match.lock:
+            if not match.finished and match.round_no == 0:
+                await run_match_step(match, start_round(match))
     return web.json_response({"ok": True})
 
 
@@ -1360,13 +1364,19 @@ async def handle_match_pick(request):
         if card is None:
             return web.json_response({"error": "not_in_hand"}, status=400)
         side.pick = card
+        # 덱 선택과 같은 이유로 "둘 다 냈다"도 이 잠금 안에서 판단한다. 그리고 판정은
+        # **낸 그 라운드에 대해서만** 해야 한다 — 기다리는 동안 타임아웃이 먼저 판정하고
+        # 다음 라운드로 넘어갔을 수 있다.
+        both_picked = match.other(viewer_id).pick is not None and not match.finished
+        picked_round = match.round_no
 
     await match.broadcast()
 
-    async with match.lock:
-        them = match.other(viewer_id)
-        if them.pick is not None and not match.finished:
-            await run_match_step(match, resolve_round(match))
+    if both_picked:
+        async with match.lock:
+            if (not match.finished and match.round_no == picked_round
+                    and match.challenger.pick and match.opponent.pick):
+                await run_match_step(match, resolve_round(match))
     return web.json_response({"ok": True})
 
 
@@ -1481,6 +1491,7 @@ class PvpMatch:
         # deadline은 유닉스 시각이라 화면이 남은 초를 직접 계산해 보여줄 수 있다.
         self.deadline: float | None = None
         self._timer: asyncio.Task | None = None
+        self.web_sides: set[int] = set()      # 웹 화면을 열어둔 참가자 id
 
     def arm(self, seconds: int, on_expire) -> None:
         """`seconds` 뒤에 `on_expire()`를 돌리는 타이머를 건다 (이전 타이머는 취소)."""
@@ -1497,11 +1508,21 @@ class PvpMatch:
         self._timer = asyncio.create_task(run())
 
     def disarm(self) -> None:
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
+        """건 타이머를 해제한다.
+
+        **만료 콜백 안에서 불릴 때 자기 자신을 취소하면 안 된다.** 타임아웃이 터지면
+        `round_timed_out`/`deck_timed_out` -> `resolve_round`/`finish_match` 순으로 이어지는데,
+        그 안에서 `disarm()`이 지금 돌고 있는 바로 그 타이머 태스크를 취소해버려서 **다음 await에서
+        CancelledError가 터지고 진행이 통째로 중단**됐다. `CancelledError`는 `Exception`이 아니라
+        `BaseException`이라 `run_match_step()`의 except에도 안 걸려 아무 안내 없이 조용히 멈췄다.
+        증상은 두 가지로 나타났다 — 덱을 아무도 안 고르면 판돈이 'playing'으로 묶인 채 매치가
+        영원히 안 끝나고, 라운드에서 안 내면 첫 판정 직후 화면이 멈췄다.
+        (테스트는 `round_timed_out()`을 직접 불러서 검증했기 때문에 이 경로를 못 잡았다.)
+        """
+        timer, self._timer = self._timer, None
+        if timer is not None and timer is not asyncio.current_task():
+            timer.cancel()
         self.deadline = None
-        self.web_sides: set[int] = set()      # 웹 화면을 열어둔 참가자 id
 
     def snapshot(self, viewer_id: int | None) -> dict:
         """웹 화면이 그릴 수 있는 형태로 현재 상태를 통째로 담아준다.
@@ -1692,29 +1713,44 @@ async def start_round(match: PvpMatch) -> None:
         await resolve_round(match)
         return
 
-    match.arm(config["pvp_config"]["round_pick_timeout_seconds"], lambda: round_timed_out(match))
+    # 타이머에 **지금 라운드 번호를 같이 넘긴다.** 제한 시간이 끝나는 바로 그 순간에 카드를
+    # 내면, 타이머가 이미 깨어난 뒤라 취소가 안 먹고 다음 라운드에 끼어들 수 있다.
+    this_round = match.round_no      # 람다 안에서 읽으면 만료 시점 값이라 의미가 없다
+    match.arm(config["pvp_config"]["round_pick_timeout_seconds"],
+              lambda: round_timed_out(match, this_round))
     await match.broadcast()
 
 
-async def round_timed_out(match: PvpMatch) -> None:
-    """제한 시간 안에 안 낸 사람은 남은 카드 중 하나를 무작위로 대신 낸다 (매치를 취소하지 않음)."""
-    if match.finished:
-        return
+async def round_timed_out(match: PvpMatch, round_no: int) -> None:
+    """제한 시간 안에 안 낸 사람은 남은 카드 중 하나를 무작위로 대신 낸다 (매치를 취소하지 않음).
+
+    `round_no`는 **이 타이머를 걸 때의 라운드 번호**다. 마감 직전에 카드를 내면 그 요청이
+    라운드를 판정하고 다음 라운드를 시작하는데, 그 사이 타이머는 이미 깨어나 있어서
+    `disarm()`이 못 막는다. 그대로 두면 **다음 라운드의 카드를 제멋대로 골라 즉시 판정해버린다**.
+    번호가 달라졌으면 내 차례는 지난 것이므로 아무것도 하지 않는다.
+
+    자동선택부터 판정까지 잠금을 놓지 않는다 — 중간에 놓으면 그 틈에 들어온 제출과 섞인다.
+    """
     async with match.lock:
-        if match.finished:
+        if match.finished or match.round_no != round_no:
             return
         for side in (match.challenger, match.opponent):
             if side.pick is None and side.remaining:
                 side.pick = random.choice(side.remaining)
-    await match.broadcast()
-    async with match.lock:
-        if not match.finished and match.challenger.pick and match.opponent.pick:
+        await match.broadcast()
+        if match.challenger.pick and match.opponent.pick:
             await resolve_round(match)
 
 
 async def deck_timed_out(match: PvpMatch) -> None:
-    """제한 시간 안에 덱을 안 고르면 매치를 취소하고 판돈을 돌려준다."""
-    if not match.finished:
+    """제한 시간 안에 덱을 안 고르면 매치를 취소하고 판돈을 돌려준다.
+
+    `round_no > 0`이면 마감 직전에 양쪽이 덱을 다 골라 1라운드가 이미 시작된 것이므로
+    취소하면 안 된다 (그대로 두면 **막 시작된 매치의 판돈을 돌려주고 끊어버린다**).
+    """
+    async with match.lock:
+        if match.finished or match.round_no > 0:
+            return
         await finish_match(match, None, reason_key="match_cancelled_timeout")
 
 
@@ -1809,8 +1845,11 @@ async def edit_public_match(message, lang: str, challenger, opponent, wager: int
             embed=public_match_embed(lang, challenger, opponent, wager,
                                      state=state, url=url, detail=detail),
             view=None)
-    except discord.HTTPException:
-        pass
+    except Exception as e:
+        # **채널 메시지 갱신은 꾸밈이다. 여기서 예외가 새면 안 된다.**
+        # finish_match 한가운데서 불리므로, 터지면 그 뒤의 정리가 통째로 건너뛰어진다.
+        # on_timeout에서 터지면 도전장이 'pending'으로 남아 다음 대결까지 막힌다.
+        print(f"⚠️ 공개 매치 메시지 갱신 실패 (매치는 정상 진행): {e}")
 
 
 class MatchInviteView(discord.ui.View):
@@ -1925,8 +1964,14 @@ class MatchInviteView(discord.ui.View):
     async def on_timeout(self):
         if self.answered:
             return
-        async with bot.pool.acquire() as conn:
-            await cancel_match(conn, self.match_id)
+        # 여기서 예외가 나면 매치가 'pending'으로 남고, create_match의 중복 검사에 걸려
+        # **그 두 사람은 봇을 재시작할 때까지 새 대결을 걸 수 없다.** 그래서 정리를 먼저
+        # 끝내고, 화면 갱신 실패가 정리를 막지 않게 한다.
+        try:
+            async with bot.pool.acquire() as conn:
+                await cancel_match(conn, self.match_id)
+        except Exception:
+            traceback.print_exc()
         # 공개 도전장은 채널에 남아 있으므로 '무산됨'으로 바꿔준다. 안 그러면 죽은 버튼이
         # 계속 보이고, 누르면 "상호작용 실패"만 뜬다.
         await edit_public_match(self.public_message, self.lang, self.challenger,
@@ -2034,16 +2079,19 @@ class ArcadePanelView(discord.ui.View):
     def __init__(self, lang: str):
         super().__init__(timeout=None)
         self.lang = lang
-        for key, style, handler in (
-            ("panel_checkin", discord.ButtonStyle.success, self.on_checkin),
-            ("panel_summon", discord.ButtonStyle.primary, self.on_summon),
-            ("panel_summon_multi", discord.ButtonStyle.primary, self.on_summon_multi),
-            ("panel_deck", discord.ButtonStyle.secondary, self.on_deck),
-            ("panel_match", discord.ButtonStyle.danger, self.on_match),
-            ("panel_points", discord.ButtonStyle.secondary, self.on_points),
+        # **줄은 직접 나눈다.** 디스코드는 한 줄에 버튼 5개까지라, 6개를 그냥 넣으면
+        # discord.py가 5 + 1로 채워서 마지막 버튼(포인트) 하나만 덩그러니 아랫줄에 떨어진다.
+        # 3 + 3으로 나눠 "매일 하는 것 / 관리·대결"이 줄로도 구분되게 한다.
+        for row, key, style, handler in (
+            (0, "panel_checkin", discord.ButtonStyle.success, self.on_checkin),
+            (0, "panel_summon", discord.ButtonStyle.primary, self.on_summon),
+            (0, "panel_summon_multi", discord.ButtonStyle.primary, self.on_summon_multi),
+            (1, "panel_deck", discord.ButtonStyle.secondary, self.on_deck),
+            (1, "panel_match", discord.ButtonStyle.danger, self.on_match),
+            (1, "panel_points", discord.ButtonStyle.secondary, self.on_points),
         ):
             label = get_msg(lang, key, count=config["summon_config"]["multi_count"])                 if key == "panel_summon_multi" else get_msg(lang, key)
-            button = discord.ui.Button(label=label, style=style,
+            button = discord.ui.Button(label=label, style=style, row=row,
                                        custom_id=f"arcade_{key}_{lang}")
             button.callback = handler
             self.add_item(button)
