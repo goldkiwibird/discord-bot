@@ -1281,6 +1281,8 @@ async def handle_match_labels(request):
                 "match_vs", "match_waiting_deck", "match_waiting_pick", "match_opponent_deck",
                 "web_match_spectators", "web_match_pick_prompt", "web_match_your_turn",
                 "web_match_round", "web_match_score", "web_match_win", "web_match_lose",
+                "web_match_deck_prompt", "web_match_deck_label",
+                "match_cancelled_timeout", "match_cancelled_error",
                 "web_match_draw", "web_match_final_win", "web_match_final_lose",
                 "web_match_final_draw", "web_match_ended", "web_match_lost_connection",
                 "web_match_not_found", "web_match_wager",
@@ -1351,6 +1353,37 @@ def _sse(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+async def handle_match_deck(request):
+    """웹에서 이번 대결에 쓸 덱을 고른다. 양쪽이 다 고르면 1라운드가 시작된다."""
+    resolved = resolve_match_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    match, viewer_id = resolved
+    if viewer_id not in match.sides:
+        return web.json_response({"error": "not_a_player"}, status=403)
+
+    try:
+        number = int((await request.json()).get("deck_number"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return web.json_response({"error": "bad_request"}, status=400)
+
+    side = match.sides[viewer_id]
+    async with match.lock:
+        if match.finished or side.deck_number is not None:
+            return web.json_response({"error": "already_chosen"}, status=409)
+        if number not in side.decks:
+            return web.json_response({"error": "no_such_deck"}, status=400)
+        side.choose_deck(number)
+
+    await match.broadcast()
+
+    async with match.lock:
+        them = match.other(viewer_id)
+        if them.deck_number is not None and not match.finished:
+            await run_match_step(match, start_round(match))
+    return web.json_response({"ok": True})
+
+
 async def handle_match_pick(request):
     """웹에서 카드를 낸다. 디스코드 선택 메뉴와 **같은 경로를 타야** 경합이 안 난다."""
     resolved = resolve_match_view(request)
@@ -1401,6 +1434,7 @@ async def start_web_server():
     app.router.add_get("/api/match", handle_match_state)
     app.router.add_get("/api/match/labels", handle_match_labels)
     app.router.add_get("/api/match/stream", handle_match_stream)
+    app.router.add_post("/api/match/deck", handle_match_deck)
     app.router.add_post("/api/match/pick", handle_match_pick)
     app.router.add_post("/api/deck", handle_deck_save)
     app.router.add_post("/api/deck/reset-enhance", handle_deck_reset_enhance)
@@ -1491,6 +1525,31 @@ class PvpMatch:
         self.last_round: dict | None = None   # 직전 라운드 판정 결과 + 근거 (이펙트용)
         self.winner_id: int | None = None
         self.end_reason: str | None = None
+        # 제한 시간은 서버가 잰다. 예전에는 discord.ui.View의 timeout이 재줬는데, 조작이
+        # 웹으로 옮겨가면서 View가 사라져 직접 타이머를 돌려야 한다.
+        # deadline은 유닉스 시각이라 화면이 남은 초를 직접 계산해 보여줄 수 있다.
+        self.deadline: float | None = None
+        self._timer: asyncio.Task | None = None
+
+    def arm(self, seconds: int, on_expire) -> None:
+        """`seconds` 뒤에 `on_expire()`를 돌리는 타이머를 건다 (이전 타이머는 취소)."""
+        self.disarm()
+        self.deadline = time.time() + seconds
+
+        async def run():
+            try:
+                await asyncio.sleep(seconds)
+            except asyncio.CancelledError:
+                return
+            await run_match_step(self, on_expire())
+
+        self._timer = asyncio.create_task(run())
+
+    def disarm(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self.deadline = None
         self.web_sides: set[int] = set()      # 웹 화면을 열어둔 참가자 id
 
     def snapshot(self, viewer_id: int | None) -> dict:
@@ -1536,10 +1595,22 @@ class PvpMatch:
             "my_turn": viewer_id in self.sides and self.sides[viewer_id].pick is None and both_chose,
             "spectators": self.spectators,
             "last_round": self.last_round,
+            "deadline": self.deadline,          # 남은 초는 화면이 이 시각으로 계산한다
+            # 덱을 아직 안 고른 참가자에게만 고를 거리를 내려준다 (관전자에겐 안 보낸다)
+            "my_decks": (
+                {str(number): [web_card(c) for c in cards] for number, cards in sorted(me.decks.items())}
+                if viewer_id in self.sides and me.deck_number is None else None
+            ),
             "winner": ("me" if self.winner_id == me.user.id
                        else "them" if self.winner_id == them.user.id
                        else "draw" if self.finished and not self.end_reason else None),
             "end_reason": self.end_reason,
+            # 판돈은 수락 시점에 이미 차감(에스크로)돼 있으므로, 최종 증감은
+            # 승리 +판돈 / 패배 -판돈 / 무효·무승부 0 이다.
+            "points_delta": (
+                0 if not self.finished or not self.wager or self.end_reason or self.winner_id is None
+                else self.wager if self.winner_id == me.user.id else -self.wager
+            ),
             "deck_size": config["deck_config"]["deck_size"],
         }
 
@@ -1602,29 +1673,6 @@ def timer_line(lang: str, seconds: int) -> str:
     """
     return get_msg(lang, "match_time_left", time=f"<t:{int(time.time()) + seconds}:R>")
 
-async def push_match_view(side: PvpSide, embed: discord.Embed, view: discord.ui.View | None) -> None:
-    """참가자의 DM 화면을 제자리에서 갱신 (없으면 새로 보냄)."""
-    if side.message is None:
-        side.message = await side.user.send(embed=embed, view=view)
-    else:
-        await side.message.edit(embed=embed, view=view)
-
-async def resend_match_view(side: PvpSide, embed: discord.Embed, view: discord.ui.View | None) -> None:
-    """참가자의 DM 화면을 지우고 새 메시지로 다시 보낸다.
-
-    상대 덱 공개나 라운드 판정 결과는 이미지 첨부 때문에 매번 새 메시지로 나가는데, 선택 패널을
-    제자리에서 고쳐 쓰면 그 이미지들 위로 밀려 올라가서 유저가 스크롤을 올려야 보인다 —
-    제한 시간이 있는 화면이니 항상 DM 최하단에 오도록 다시 보낸다.
-    새로 보내는 게 실패하면 기존 메시지라도 남도록 전송을 먼저 하고 나중에 지운다.
-    """
-    old = side.message
-    side.message = await side.user.send(embed=embed, view=view)
-    if old is not None:
-        try:
-            await old.delete()
-        except discord.HTTPException:
-            pass
-
 async def run_match_step(match: PvpMatch, step) -> None:
     """매치 진행 한 단계를 돌리되, 예상 못 한 예외가 나면 판돈을 돌려주고 매치를 끝낸다.
 
@@ -1647,6 +1695,7 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
     match.finished = True
     match.winner_id = winner_id
     match.end_reason = reason_key
+    match.disarm()
 
     try:
         async with bot.pool.acquire() as conn:
@@ -1663,42 +1712,18 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
         if mid == match.match_id:
             del match_tokens[token]
 
+    # 승패와 포인트 증감은 전부 웹 화면에서 보여준다 — 디스코드로는 아무것도 보내지 않는다.
     for side in (match.challenger, match.opponent):
         active_matches.pop(side.user.id, None)
-        them = match.other(side.user.id)
-        lang = match.lang
 
-        if reason_key:
-            embed = discord.Embed(description=get_msg(lang, reason_key), color=discord.Color.greyple())
-        else:
-            if winner_id is None:
-                title, reward = "match_final_void", ("match_reward_void", match.wager)
-            elif winner_id == side.user.id:
-                title, reward = "match_final_win", ("match_reward_win", match.wager)
-            else:
-                title, reward = "match_final_lose", ("match_reward_lose", match.wager)
-
-            description = get_msg(lang, title, you=side.wins, them=them.wins)
-            if match.wager:
-                description += "\n" + get_msg(lang, reward[0], amount=reward[1])
-            embed = discord.Embed(
-                description=description,
-                color=discord.Color.gold() if winner_id == side.user.id else discord.Color.greyple(),
-            )
-
-        # 승패 결과는 DM으로 보낸다. 인터랙션에 붙는 ephemeral 응답은 쓸 수 없다 —
-        # 인터랙션은 3초 안에 응답해야 하는데 최종 결과는 상대가 카드를 고를 때까지(최대 15초)
-        # 기다려야 나오므로, 그 시점엔 이미 데드라인이 지나 있다. 모달도 같은 이유로 불가능.
-        try:
-            # 마지막 판정 이미지 아래에 결과가 오도록, 남아 있던 선택 패널은 지우고 새로 보낸다
-            await resend_match_view(side, embed, None)
-        except discord.HTTPException:
-            pass
 
 async def start_round(match: PvpMatch) -> None:
-    """다음 라운드 시작. 남은 카드가 1장뿐이면 고를 것도 없으니 자동으로 낸다."""
+    """다음 라운드 시작. 남은 카드가 1장뿐이면 고를 것도 없으니 자동으로 낸다.
+
+    진행은 전부 웹 화면(match_page.html)에서 이뤄지므로 디스코드로는 아무것도 보내지 않는다.
+    제한 시간은 서버 타이머가 재고, 남은 초는 스냅샷의 deadline을 보고 화면이 직접 그린다.
+    """
     match.round_no += 1
-    deck_size = config["deck_config"]["deck_size"]
 
     for side in (match.challenger, match.opponent):
         side.pick = None
@@ -1711,24 +1736,31 @@ async def start_round(match: PvpMatch) -> None:
         await resolve_round(match)
         return
 
-    round_timeout = config["pvp_config"]["round_pick_timeout_seconds"]
-    for side in (match.challenger, match.opponent):
-        them = match.other(side.user.id)
-        waiting = side.pick is not None  # 마지막 남은 카드라 자동 선택된 쪽은 고를 게 없다
-        description = get_msg(match.lang, "match_waiting_pick") if waiting else (
-            get_msg(match.lang, "match_round_prompt", round=match.round_no, total=deck_size)
-            + "\n" + timer_line(match.lang, round_timeout))
-        embed = discord.Embed(
-            title=get_msg(match.lang, "match_vs",
-                          challenger=match.challenger.user.display_name,
-                          opponent=match.opponent.user.display_name),
-            description=description,
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name=get_msg(match.lang, "match_score",
-                                     you=side.wins, them=them.wins), value="​", inline=False)
+    match.arm(config["pvp_config"]["round_pick_timeout_seconds"], lambda: round_timed_out(match))
+    await match.broadcast()
 
-        await resend_match_view(side, embed, None if waiting else CardPickView(match, side))
+
+async def round_timed_out(match: PvpMatch) -> None:
+    """제한 시간 안에 안 낸 사람은 남은 카드 중 하나를 무작위로 대신 낸다 (매치를 취소하지 않음)."""
+    if match.finished:
+        return
+    async with match.lock:
+        if match.finished:
+            return
+        for side in (match.challenger, match.opponent):
+            if side.pick is None and side.remaining:
+                side.pick = random.choice(side.remaining)
+    await match.broadcast()
+    async with match.lock:
+        if not match.finished and match.challenger.pick and match.opponent.pick:
+            await resolve_round(match)
+
+
+async def deck_timed_out(match: PvpMatch) -> None:
+    """제한 시간 안에 덱을 안 고르면 매치를 취소하고 판돈을 돌려준다."""
+    if not match.finished:
+        await finish_match(match, None, reason_key="match_cancelled_timeout")
+
 
 async def resolve_round(match: PvpMatch) -> None:
     """양쪽 카드가 다 나왔을 때 승패를 계산하고 다음 라운드로 넘어간다."""
@@ -1753,34 +1785,8 @@ async def resolve_round(match: PvpMatch) -> None:
     for side in (a, b):
         side.remaining = [c for c in side.remaining if c["hero_id"] != side.pick["hero_id"]]
 
-    for side, value_key, other_key in ((a, "value_a", "value_b"), (b, "value_b", "value_a")):
-        them = match.other(side.user.id)
-        if result["winner"] is None:
-            key = "match_round_result_draw"
-        elif (result["winner"] == "a") == (side is a):
-            key = "match_round_result_win"
-        else:
-            key = "match_round_result_lose"
-
-        embed = discord.Embed(
-            description=get_msg(match.lang, key, round=match.round_no,
-                                you=side.pick["display_name"], them=them.pick["display_name"],
-                                you_value=result[value_key], them_value=result[other_key]),
-            color=discord.Color.green() if key.endswith("win")
-            else discord.Color.red() if key.endswith("lose") else discord.Color.greyple(),
-        )
-        embed.add_field(name=get_msg(match.lang, "match_score", you=side.wins, them=them.wins),
-                        value="​", inline=False)
-
-        # 카드 그림은 웹 관전 화면(match_page.html)이 보여준다 — 디스코드에는 텍스트만 보낸다.
-        # 서버 합성은 0.1 CPU인 Render에서 매치당 344ms를 잡아먹었는데, 그게 동시 매치 수의
-        # 유일한 병목이었다. 웹으로 옮기면서 그 비용이 사라졌다.
-        try:
-            await side.user.send(embed=embed)
-        except discord.HTTPException:
-            pass
-
-    await match.broadcast()
+    match.disarm()          # 이번 라운드 타이머 종료
+    await match.broadcast()   # 판정 결과를 웹 화면에 먼저 띄운다
 
     if a.remaining:
         await start_round(match)
@@ -1788,66 +1794,6 @@ async def resolve_round(match: PvpMatch) -> None:
         winner_id = (a.user.id if a.wins > b.wins
                      else b.user.id if b.wins > a.wins else None)
         await finish_match(match, winner_id)
-
-class CardPickView(discord.ui.View):
-    """이번 라운드에 낼 카드를 고르는 선택 메뉴 (남은 카드는 최대 5장이라 한 메뉴에 다 들어간다)."""
-
-    def __init__(self, match: PvpMatch, side: PvpSide):
-        super().__init__(timeout=config["pvp_config"]["round_pick_timeout_seconds"])
-        self.match, self.side = match, side
-
-        select = discord.ui.Select(
-            placeholder=get_msg(match.lang, "match_round_prompt",
-                                round=match.round_no, total=config["deck_config"]["deck_size"]),
-            options=[
-                discord.SelectOption(
-                    label=f"{card['display_name']} ({card['grade']})",
-                    description=(get_msg(match.lang, "element_" + card["element"]) + " · "
-                                 + get_msg(match.lang, "job_" + card["job"])),
-                    value=str(card["hero_id"]),
-                )
-                for card in side.remaining
-            ],
-        )
-        select.callback = self.on_pick
-        self.add_item(select)
-
-    async def on_pick(self, interaction: discord.Interaction):
-        if self.match.finished or self.side.pick is not None:
-            await interaction.response.defer()
-            return
-
-        hero_id = int(interaction.data["values"][0])
-        self.side.pick = next(c for c in self.side.remaining if c["hero_id"] == hero_id)
-        self.stop()
-
-        embed = discord.Embed(description=get_msg(self.match.lang, "match_waiting_pick"),
-                              color=discord.Color.blurple())
-        await interaction.response.edit_message(embed=embed, view=None)
-        await self.match.broadcast()   # 디스코드에서 낸 카드도 웹 화면에 바로 보이도록
-
-        async with self.match.lock:
-            them = self.match.other(self.side.user.id)
-            if them.pick is not None and not self.match.finished:
-                await run_match_step(self.match, resolve_round(self.match))
-
-    async def on_timeout(self):
-        # 제한 시간 안에 못 고르면 남은 카드 중 하나를 무작위로 대신 낸다 (매치를 취소하지 않음).
-        if self.match.finished or self.side.pick is not None:
-            return
-        self.side.pick = random.choice(self.side.remaining)
-
-        embed = discord.Embed(description=get_msg(self.match.lang, "match_waiting_pick"),
-                              color=discord.Color.blurple())
-        try:
-            await push_match_view(self.side, embed, None)
-        except discord.HTTPException:
-            pass
-
-        async with self.match.lock:
-            them = self.match.other(self.side.user.id)
-            if them.pick is not None and not self.match.finished:
-                await run_match_step(self.match, resolve_round(self.match))
 
 class MatchInviteView(discord.ui.View):
     """도전장 DM에 붙는 수락/거부 버튼."""
@@ -1904,23 +1850,6 @@ class MatchInviteView(discord.ui.View):
         match.public_channel = self.public_channel
         live_matches[self.match_id] = match   # 웹이 match_id로 찾아올 수 있게 등록
 
-        # 상대(수락한 쪽)의 화면은 방금 누른 도전장 메시지를 그대로 이어서 쓴다
-        opponent_side.message = await interaction.original_response()
-
-        try:
-            challenger_side.message = await self.challenger.send(
-                embed=discord.Embed(description=get_msg(self.lang, "match_deck_prompt"),
-                                    color=discord.Color.blurple()))
-        except discord.Forbidden:
-            # 도전자에게 DM을 못 보내면 진행이 불가능하므로 판돈을 되돌리고 종료
-            async with bot.pool.acquire() as conn:
-                await cancel_match(conn, self.match_id)
-            await interaction.edit_original_response(
-                embed=discord.Embed(description=get_msg(self.lang, "match_err_dm_opponent",
-                                                        opponent=self.challenger.display_name)),
-                view=None)
-            return
-
         # 웹 화면 링크. 참가자에게는 **토큰이 붙은 링크**(카드 제출 가능)를 DM으로 주고,
         # 공개 대결이면 채널에 **토큰 없는 링크**(읽기 전용 관전)를 한 번 더 뿌린다.
         base = web_base_url()
@@ -1943,15 +1872,12 @@ class MatchInviteView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-        deck_timeout = config["pvp_config"]["pick_timeout_seconds"]
+        # 덱 선택도 웹에서 한다. 제한 시간 안에 양쪽이 다 고르지 않으면 매치를 취소하고
+        # 판돈을 돌려준다 (예전에는 DeckPickView의 timeout이 이 역할을 했다).
         for side in (challenger_side, opponent_side):
             active_matches[side.user.id] = match
-            await push_match_view(
-                side,
-                discord.Embed(description=get_msg(self.lang, "match_deck_prompt")
-                              + "\n" + timer_line(self.lang, deck_timeout),
-                              color=discord.Color.blurple()),
-                DeckPickView(match, side))
+        match.arm(config["pvp_config"]["pick_timeout_seconds"], lambda: deck_timed_out(match))
+        await match.broadcast()
 
     async def on_decline(self, interaction: discord.Interaction):
         self.answered = True
@@ -1972,75 +1898,6 @@ class MatchInviteView(discord.ui.View):
             return
         async with bot.pool.acquire() as conn:
             await cancel_match(conn, self.match_id)
-
-class DeckPickView(discord.ui.View):
-    """3개 덱 중 이번 대결에 쓸 덱을 고르는 메뉴."""
-
-    def __init__(self, match: PvpMatch, side: PvpSide):
-        super().__init__(timeout=config["pvp_config"]["pick_timeout_seconds"])
-        self.match, self.side = match, side
-
-        select = discord.ui.Select(
-            placeholder=get_msg(match.lang, "match_deck_prompt"),
-            options=[
-                discord.SelectOption(
-                    label=get_msg(match.lang, "match_deck_option", number=number),
-                    description=", ".join(c["display_name"] for c in cards)[:100],
-                    value=str(number),
-                )
-                for number, cards in sorted(side.decks.items())
-            ],
-        )
-        select.callback = self.on_pick
-        self.add_item(select)
-
-    async def on_pick(self, interaction: discord.Interaction):
-        if self.side.deck_number is not None or self.match.finished:
-            await interaction.response.defer()
-            return
-
-        self.side.choose_deck(int(interaction.data["values"][0]))
-        self.stop()
-        await interaction.response.edit_message(
-            embed=discord.Embed(description=get_msg(self.match.lang, "match_waiting_deck"),
-                                color=discord.Color.blurple()),
-            view=None)
-
-        async with self.match.lock:
-            them = self.match.other(self.side.user.id)
-            if them.deck_number is None or self.match.finished:
-                return
-
-            # 양쪽 덱이 정해졌으니 상대방의 덱 5장을 카드 이미지로 공개하고 1라운드 시작
-            # (내 덱은 이미 알고 있으니 안 보여줘도 됨). 한 줄로 늘어놓으면 디스코드가 가로에
-            # 맞춰 줄여버려 카드가 작아지므로 2장/3장 두 줄(`deck_reveal_rows`)로 크게 보여준다.
-            await run_match_step(self.match, self.reveal_and_start())
-
-    async def reveal_and_start(self) -> None:
-        """상대 덱이 공개됐음을 알리고 1라운드를 시작한다 (run_match_step이 감싸서 호출).
-
-        카드 그림은 웹 관전 화면이 보여주므로 디스코드에는 안내 문구만 보낸다.
-        """
-        await self.match.broadcast()   # 양쪽 덱이 정해졌으니 웹 화면에 카드가 깔린다
-        for side in (self.match.challenger, self.match.opponent):
-            other = self.match.other(side.user.id)
-            embed = discord.Embed(
-                title=get_msg(self.match.lang, "match_vs",
-                              challenger=self.match.challenger.user.display_name,
-                              opponent=self.match.opponent.user.display_name),
-                description=get_msg(self.match.lang, "match_opponent_deck") + "\n"
-                + ", ".join(c["display_name"] for c in other.remaining),
-                color=discord.Color.blurple())
-            try:
-                await side.user.send(embed=embed)
-            except discord.HTTPException:
-                pass
-
-        await start_round(self.match)
-
-    async def on_timeout(self):
-        if not self.match.finished:
-            await finish_match(self.match, None, reason_key="match_cancelled_timeout")
 
 async def start_match(interaction: discord.Interaction, opponent: discord.Member,
                       wager: int | None, public: bool = False) -> None:
