@@ -50,6 +50,25 @@ HEROES: dict[int, dict] = {}                    # id -> 영웅 (기본 스탯까
 HEROES_BY_GRADE: dict[str, list[dict]] = {}     # 소환이 쓰는 등급별 묶음
 
 
+_hero_master_warned = False
+
+
+def hero_master_ready() -> bool:
+    """마스터 데이터가 세워져 있는지. 비어 있으면 **한 번만** 시끄럽게 알린다.
+
+    비어 있으면 보유 카드·덱·이력이 전부 빈 화면으로 나오는데, 그게 "카드가 없다"와
+    구분이 안 돼서 원인을 찾기 어렵다 (실제로 미리보기 스크립트가 이 상태로 돌다 막혔다).
+    """
+    global _hero_master_warned
+    if HEROES:
+        return True
+    if not _hero_master_warned:
+        _hero_master_warned = True
+        print("⚠️ 영웅 마스터 데이터가 로드되지 않았습니다 (load_hero_master). "
+              "카드/덱/이력이 비어 보입니다.")
+    return False
+
+
 def hero_base_stats(job: str, race: str) -> dict[str, int]:
     """직업 기본값 + 종족 보정 = 그 영웅의 기본 스탯."""
     conf = config["hero_stat_config"]
@@ -784,6 +803,7 @@ def validate_deck(hero_ids: list, owned_ids: set, deck_number: int) -> str | Non
 
 async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
     """덱 편성 화면에 필요한 데이터 (보유 카드 + 현재 덱 배치)."""
+    hero_master_ready()
     rows = await conn.fetch(
         """
         SELECT c.hero_id, c.enhance_count,
@@ -853,7 +873,8 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
             hero = HEROES.get(hero_id)
             if hero is None:      # 마스터 데이터에서 빠진 영웅 — 이름을 못 찾아도 기록은 보여준다
                 cards.append({"name": f"#{hero_id}", "image_name": "", "grade": "R",
-                              "job": "warrior", "element": "", "outcome": outcome})
+                              "job": "warrior", "element": "", "outcome": outcome,
+                              "stats": {key: 0 for key in STAT_KEYS}})
                 continue
             cards.append({
                 "name": hero_display_name(hero, lang),
@@ -861,6 +882,9 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
                 "grade": hero["grade"],
                 "job": hero["job"],           # 웹에서 카드 그림을 조립할 때 직업/속성 아이콘이 필요하다
                 "element": hero["element"],
+                # **강화를 반영하지 않은 기본 스탯**이다. 소환 결과 카드는 "그때 뽑은 카드"를
+                # 보여주는 자리라, 나중에 강화한 수치를 얹으면 기록이 아니라 현재 상태가 된다.
+                "stats": {key: hero[key] for key in STAT_KEYS},
                 "outcome": outcome,           # new / enhance / maxed
             })
         history.append({
@@ -917,6 +941,7 @@ async def fetch_match_history(conn, user_id: int, limit: int) -> list[dict]:
 
 async def fetch_battle_decks(conn, user_id: int, lang: str) -> dict[int, list[dict]]:
     """PVP에 쓸 수 있는 덱(5장이 다 채워진 것)만 카드 정보까지 붙여서 가져온다."""
+    hero_master_ready()
     rows = await conn.fetch(
         """
         SELECT d.deck_number, d.slot, d.hero_id,
