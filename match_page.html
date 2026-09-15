@@ -30,7 +30,7 @@
   #app { display: grid; grid-template-columns: 1fr 220px; height: 100%; }
   @media (max-width: 760px) { #app { grid-template-columns: 1fr; } .panel { display: none; } }
 
-  .board { display: grid; grid-template-rows: auto 1fr auto; height: 100%; min-height: 0;
+  .board { position: relative; display: grid; grid-template-rows: auto 1fr auto; height: 100%; min-height: 0;
            padding: 10px 14px; gap: 8px; }
 
   /* ── 이름표 ─────────────────────────────── */
@@ -110,13 +110,16 @@
   .clashLayer.out { animation: fadeOut .35s ease-in both; }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+  /* 상대 카드는 왼쪽 위, 내 카드는 오른쪽 아래로 **대각선**으로 놓고 VS가 그 사이 정중앙에 온다.
+     두 장을 같은 세로축에 세워봤더니 정적으로 보여서, 원래의 대각선 배치를 유지한다.
+     VS는 세로 flex의 가운데 줄이라 두 카드 높이가 같은 한 항상 정확히 중앙이다. */
   .clash { display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .fighter { display: flex; align-items: center; gap: 14px; }
-  .fighter.them { flex-direction: row; }
-  .fighter.me { flex-direction: row-reverse; }
+  .fighter.them { flex-direction: row; }        /* 카드 왼쪽 · 수치 오른쪽 */
+  .fighter.me { flex-direction: row-reverse; }  /* 수치 왼쪽 · 카드 오른쪽 */
   .fighter .card { width: 172px; }
-  .fighter .info { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
-  .fighter.me .info { align-items: flex-end; text-align: right; }
+  .info { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
+  .info.me { align-items: flex-end; text-align: right; }
 
   @keyframes slamDown { 0% { transform: translateY(-220px) scale(.7); opacity: 0; }
                         70% { transform: translateY(10px) scale(1.07); opacity: 1; }
@@ -180,22 +183,33 @@
   .deckopt .dcards .card { width: 62px; }
 
   /* 최종 결과의 포인트 증감 */
-  .final .delta { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .final .delta.up { color: var(--ok); } .final .delta.down { color: var(--bad); }
-  .final .delta.flat { color: var(--dim); }
 
   /* ── 최종 결과 ──────────────────────────── */
-  .final { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px;
-           align-items: center; justify-content: center; background: rgba(8,10,15,.9); z-index: 50; }
-  .final .big { font-size: 62px; font-weight: 900; letter-spacing: .2em; }
-  .final.win .big { color: var(--gold); text-shadow: 0 0 44px rgba(255,197,61,.75); }
-  .final.lose .big { color: var(--bad); text-shadow: 0 0 44px rgba(255,77,79,.6); }
-  .final.draw .big { color: var(--dim); }
-  @keyframes finalIn { 0% { transform: scale(3) rotate(-8deg); opacity: 0; }
-                       60% { transform: scale(.92); opacity: 1; }
-                       100% { transform: scale(1); } }
-  .final .big { animation: finalIn .6s cubic-bezier(.2,.9,.3,1.4) both; }
-  .final .sub { color: var(--dim); font-size: 15px; }
+  /* 완전히 덮지 않고 80% 검정으로만 가린다 — 마지막 판의 카드가 비쳐 보이게 하려는 것.
+     결과 자체는 우측 관전 UI에서 보여준다. */
+  .finalDim { position: absolute; inset: 0; z-index: 40; background: rgba(0, 0, 0, .8);
+              animation: fadeIn .4s ease-out both; pointer-events: none; }
+
+  .result { border-bottom: 1px solid var(--line); padding-bottom: 12px;
+            display: flex; flex-direction: column; gap: 6px; }
+  .result .big { font-size: 30px; font-weight: 900; letter-spacing: .1em; line-height: 1.1; }
+  .result.win .big { color: var(--gold); text-shadow: 0 0 22px rgba(255,197,61,.7); }
+  .result.lose .big { color: var(--bad); text-shadow: 0 0 22px rgba(255,77,79,.55); }
+  .result.draw .big { color: var(--dim); }
+  @keyframes resultIn { 0% { transform: scale(2.2); opacity: 0; }
+                        60% { transform: scale(.94); opacity: 1; }
+                        100% { transform: scale(1); } }
+  .result .big { animation: resultIn .55s cubic-bezier(.2,.9,.3,1.4) both; }
+  .result .line { font-size: 13px; color: var(--dim); }
+  .result .delta { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .result .delta.up { color: var(--ok); } .result .delta.down { color: var(--bad); }
+  .result .delta.flat { color: var(--dim); }
+
+  /* 좁은 화면에서는 우측 패널이 숨겨져 있어 결과가 안 보인다 — 끝나면 다시 펼친다 */
+  @media (max-width: 760px) {
+    #app.ended { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    #app.ended .panel { display: flex; border-left: none; border-top: 1px solid var(--line); }
+  }
 
   /* ── 우측 패널 ──────────────────────────── */
   .panel { background: var(--panel); border-left: 1px solid var(--line); padding: 14px;
@@ -371,10 +385,11 @@ function showClash(round) {
   const verdict = round.draw ? "draw" : mine.won ? "win" : "lose";
   const verdictText = msg(round.draw ? "web_match_draw" : mine.won ? "web_match_win" : "web_match_lose");
 
+  // 카드와 수치를 한 덩어리로 묶어 좌우를 번갈아 놓는다 (대각선 배치)
   const fighter = (d, who) => `
     <div class="fighter ${who} ${d.won ? "won" : round.draw ? "" : "lost"}">
       ${cardHtml(d.card)}
-      <div class="info">
+      <div class="info ${who}">
         <div class="value">${d.value}</div>
         ${reasonHtml(d)}
       </div>
@@ -423,22 +438,30 @@ function reasonHtml(detail) {
 }
 
 function showFinal(s) {
-  if (document.querySelector(".final")) return;
+  if (document.querySelector(".finalDim")) return;
   clearTimeout(showClash.timer);
   document.querySelector(".clashLayer")?.remove();
+
+  // 보드는 80% 검정으로만 가린다 (마지막 카드가 비쳐 보이도록)
+  const dim = document.createElement("div");
+  dim.className = "finalDim";
+  document.querySelector(".board").appendChild(dim);
+  $("app").classList.add("ended");   // 좁은 화면에서도 우측 UI가 보이게
+
   const kind = s.winner === "me" ? "win" : s.winner === "them" ? "lose" : "draw";
-  const el = document.createElement("div");
-  el.className = "final " + kind;
-  // 판돈은 수락 시점에 이미 묶여 있었으므로 여기 표시되는 값이 실제 손익이다
   const d = s.points_delta || 0;
-  const deltaHtml = s.wager
-    ? `<div class="delta ${d > 0 ? "up" : d < 0 ? "down" : "flat"}">${d > 0 ? "+" : ""}${d.toLocaleString()}P</div>`
-    : "";
-  const reason = s.end_reason ? `<div class="sub">${msg(s.end_reason)}</div>` : "";
-  el.innerHTML = `<div class="big">${msg("web_match_final_" + (kind === "win" ? "win" : kind === "lose" ? "lose" : "draw"))}</div>
-                  <div class="sub">${msg("web_match_score", { you: s.me.wins, them: s.them.wins })}</div>
-                  ${deltaHtml}${reason}`;
-  document.body.appendChild(el);
+  const box = document.createElement("div");
+  box.className = "result " + kind;
+  box.innerHTML =
+    `<div class="big">${msg("web_match_final_" + kind)}</div>` +
+    `<div class="line">${msg("web_match_score", { you: s.me.wins, them: s.them.wins })}</div>` +
+    (s.wager
+      ? `<div class="delta ${d > 0 ? "up" : d < 0 ? "down" : "flat"}">${d > 0 ? "+" : ""}${d.toLocaleString()}P</div>`
+      : "") +
+    (s.end_reason ? `<div class="line">${msg(s.end_reason)}</div>` : "");
+  // 패널 맨 아래는 .status가 margin-top:auto로 밀어내서 결과가 화면 끝에 붙는다.
+  // 가장 먼저 보여야 할 정보이므로 패널 맨 위에 넣는다.
+  document.querySelector(".panel").prepend(box);
 }
 
 function startTimer(s) {
