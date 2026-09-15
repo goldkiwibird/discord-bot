@@ -76,7 +76,7 @@
     "round_pick_timeout_seconds": 15,
     "max_spectators": 50,
     "stream_heartbeat_seconds": 15,
-    "round_reveal_pause_seconds": 2
+    "round_reveal_pause_seconds": 4
   },
   "web_config": {
     "base_url": "",
@@ -334,7 +334,8 @@
       "match_public_result_draw": "🤝 Draw — match voided ({a} : {b})",
       "match_public_declined": "❌ The challenge was declined.",
       "match_public_expired": "⌛ Nobody accepted in time — the challenge expired.",
-      "match_public_restarted": "⚠️ The bot restarted, so this match was stopped. Wagers have been refunded."
+      "match_public_restarted": "⚠️ The bot restarted, so this match was stopped. Wagers have been refunded.",
+      "web_match_element_bonus": "Element bonus +{bonus}"
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -511,7 +512,8 @@
       "match_public_result_draw": "🤝 무승부 — 매치 무효 ({a} : {b})",
       "match_public_declined": "❌ 상대가 도전을 거부했습니다.",
       "match_public_expired": "⌛ 시간 안에 수락되지 않아 무산되었습니다.",
-      "match_public_restarted": "⚠️ 봇이 재시작되어 이 매치는 중단되었습니다. 판돈은 반환되었습니다."
+      "match_public_restarted": "⚠️ 봇이 재시작되어 이 매치는 중단되었습니다. 판돈은 반환되었습니다.",
+      "web_match_element_bonus": "속성 보너스 +{bonus}"
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -688,7 +690,8 @@
       "match_public_result_draw": "🤝 平手 — 本場無效（{a} : {b}）",
       "match_public_declined": "❌ 對方拒絕了戰帖。",
       "match_public_expired": "⌛ 時間內未被接受，戰帖已失效。",
-      "match_public_restarted": "⚠️ 機器人重新啟動，本場對戰已中止。賭注已退還。"
+      "match_public_restarted": "⚠️ 機器人重新啟動，本場對戰已中止。賭注已退還。",
+      "web_match_element_bonus": "屬性加成 +{bonus}"
     }
   },
   "panel_config": {
@@ -702,6 +705,117 @@
         "channel": "🕹️오락실",
         "lang": "en-US",
         "match_channel": "⚔️카드게임-공개매치"
+      }
+    }
+  },
+  "hero_stat_config": {
+    "job_base_stats": {
+      "archer": {
+        "attack": 2,
+        "hp": 3,
+        "defense": 1,
+        "accuracy": 4,
+        "evasion": 3
+      },
+      "assassin": {
+        "attack": 3,
+        "hp": 3,
+        "defense": 1,
+        "accuracy": 2,
+        "evasion": 4
+      },
+      "mage": {
+        "attack": 4,
+        "hp": 1,
+        "defense": 3,
+        "accuracy": 3,
+        "evasion": 2
+      },
+      "priest": {
+        "attack": 1,
+        "hp": 1,
+        "defense": 1,
+        "accuracy": 1,
+        "evasion": 1
+      },
+      "tank": {
+        "attack": 1,
+        "hp": 3,
+        "defense": 4,
+        "accuracy": 2,
+        "evasion": 3
+      },
+      "warrior": {
+        "attack": 3,
+        "hp": 4,
+        "defense": 1,
+        "accuracy": 2,
+        "evasion": 3
+      }
+    },
+    "race_stat_bonus": {
+      "Lizardman": {
+        "attack": 1,
+        "hp": 0,
+        "defense": 1,
+        "accuracy": 0,
+        "evasion": 0
+      },
+      "alien": {
+        "attack": 1,
+        "hp": 0,
+        "defense": 0,
+        "accuracy": 1,
+        "evasion": 0
+      },
+      "beastkin": {
+        "attack": 0,
+        "hp": 1,
+        "defense": 0,
+        "accuracy": 0,
+        "evasion": 1
+      },
+      "elf": {
+        "attack": 0,
+        "hp": 0,
+        "defense": 0,
+        "accuracy": 1,
+        "evasion": 1
+      },
+      "goblin": {
+        "attack": 1,
+        "hp": 0,
+        "defense": 0,
+        "accuracy": 0,
+        "evasion": 1
+      },
+      "human": {
+        "attack": 0,
+        "hp": 0,
+        "defense": 1,
+        "accuracy": 1,
+        "evasion": 0
+      },
+      "orc": {
+        "attack": 1,
+        "hp": 1,
+        "defense": 0,
+        "accuracy": 0,
+        "evasion": 0
+      },
+      "robot": {
+        "attack": 0,
+        "hp": 1,
+        "defense": 1,
+        "accuracy": 0,
+        "evasion": 0
+      },
+      "slime": {
+        "attack": 0,
+        "hp": 0,
+        "defense": 1,
+        "accuracy": 0,
+        "evasion": 1
       }
     }
   }
