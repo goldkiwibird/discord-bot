@@ -167,6 +167,23 @@
 
   .hint { color: var(--dim); font-size: 14px; text-align: center; }
 
+  /* 덱 선택 — 대전 시작 전에 3개 덱 중 하나를 고른다 (예전엔 디스코드 선택 메뉴였다) */
+  .deckpick { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+  .deckpick h3 { margin: 0; font-size: 15px; color: var(--dim); font-weight: 600; }
+  .deckrow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .deckopt { border: 2px solid var(--line); border-radius: 12px; padding: 8px; cursor: pointer;
+             background: var(--panel); transition: border-color .15s, transform .15s; }
+  .deckopt:hover { border-color: var(--me); transform: translateY(-3px); }
+  .deckopt.picked { border-color: var(--me); box-shadow: 0 0 0 2px rgba(79,140,255,.35); }
+  .deckopt .dlabel { font-size: 13px; font-weight: 700; margin-bottom: 6px; text-align: center; }
+  .deckopt .dcards { display: flex; gap: 4px; }
+  .deckopt .dcards .card { width: 62px; }
+
+  /* 최종 결과의 포인트 증감 */
+  .final .delta { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .final .delta.up { color: var(--ok); } .final .delta.down { color: var(--bad); }
+  .final .delta.flat { color: var(--dim); }
+
   /* ── 최종 결과 ──────────────────────────── */
   .final { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px;
            align-items: center; justify-content: center; background: rgba(8,10,15,.9); z-index: 50; }
@@ -302,11 +319,16 @@ function render() {
     }
   }
 
-  // 가운데 행은 항상 안내 문구. 판정 연출은 그 위에 겹쳐 띄웠다가 걷는다.
-  $("stage").innerHTML = `<div class="hint">${
-    s.finished ? msg("web_match_ended")
-    : s.phase === "deck" ? msg("match_waiting_deck")
-    : s.my_turn ? msg("web_match_pick_prompt") : msg("match_waiting_pick")}</div>`;
+  // 가운데 행: 덱을 아직 안 골랐으면 덱 선택, 아니면 안내 문구.
+  // 판정 연출은 그 위에 겹쳐 띄웠다가 걷는다.
+  if (!s.finished && s.my_decks) {
+    renderDeckPick(s);
+  } else {
+    $("stage").innerHTML = `<div class="hint">${
+      s.finished ? msg("web_match_ended")
+      : s.phase === "deck" ? msg("match_waiting_deck")
+      : s.my_turn ? msg("web_match_pick_prompt") : msg("match_waiting_pick")}</div>`;
+  }
   if (s.last_round && s.last_round.round !== shownRound) {
     showClash(s.last_round);
     shownRound = s.last_round.round;
@@ -314,6 +336,33 @@ function render() {
 
   if (s.finished) showFinal(s);
   startTimer(s);
+}
+
+function renderDeckPick(s) {
+  const numbers = Object.keys(s.my_decks).sort();
+  $("stage").innerHTML = `
+    <div class="deckpick">
+      <h3>${msg("web_match_deck_prompt")}</h3>
+      <div class="deckrow">
+        ${numbers.map(n => `
+          <div class="deckopt" data-deck="${n}">
+            <div class="dlabel">${msg("web_match_deck_label", { number: n })}</div>
+            <div class="dcards">${s.my_decks[n].map(c => cardHtml(c)).join("")}</div>
+          </div>`).join("")}
+      </div>
+    </div>`;
+  for (const el of $("stage").querySelectorAll(".deckopt")) {
+    el.onclick = () => chooseDeck(Number(el.dataset.deck), el);
+  }
+}
+
+async function chooseDeck(number, el) {
+  el.classList.add("picked");
+  const res = await fetch(`/api/match/deck?id=${matchId}&token=${encodeURIComponent(token)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deck_number: number }),
+  });
+  if (!res.ok) el.classList.remove("picked");   // 이미 골랐거나 시간이 지난 경우 되돌린다
 }
 
 function showClash(round) {
@@ -380,15 +429,23 @@ function showFinal(s) {
   const kind = s.winner === "me" ? "win" : s.winner === "them" ? "lose" : "draw";
   const el = document.createElement("div");
   el.className = "final " + kind;
+  // 판돈은 수락 시점에 이미 묶여 있었으므로 여기 표시되는 값이 실제 손익이다
+  const d = s.points_delta || 0;
+  const deltaHtml = s.wager
+    ? `<div class="delta ${d > 0 ? "up" : d < 0 ? "down" : "flat"}">${d > 0 ? "+" : ""}${d.toLocaleString()}P</div>`
+    : "";
+  const reason = s.end_reason ? `<div class="sub">${msg(s.end_reason)}</div>` : "";
   el.innerHTML = `<div class="big">${msg("web_match_final_" + (kind === "win" ? "win" : kind === "lose" ? "lose" : "draw"))}</div>
-                  <div class="sub">${msg("web_match_score", { you: s.me.wins, them: s.them.wins })}</div>`;
+                  <div class="sub">${msg("web_match_score", { you: s.me.wins, them: s.them.wins })}</div>
+                  ${deltaHtml}${reason}`;
   document.body.appendChild(el);
 }
 
 function startTimer(s) {
-  if (!s.my_turn || s.finished) { $("timer").hidden = true; return; }
+  // 마감시각은 서버가 정해서 내려준다 — 클라이언트가 따로 재면 새로고침이나 재접속 때 어긋난다
+  if (s.finished || !s.deadline) { $("timer").hidden = true; timerEnd = 0; return; }
   $("timer").hidden = false;
-  if (!timerEnd) timerEnd = Date.now() + labels.round_timeout * 1000;
+  timerEnd = s.deadline * 1000;
 }
 setInterval(() => {
   if ($("timer").hidden) { timerEnd = 0; return; }
