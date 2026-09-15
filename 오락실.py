@@ -1466,8 +1466,9 @@ class PvpMatch:
         self.round_no = 0
         self.finished = False
         self.lock = asyncio.Lock()  # 두 사람이 동시에 눌러도 라운드가 두 번 진행되지 않도록
-        # 공개 대결이면 관전 링크를 뿌릴 채널 (비공개면 None — 링크는 각자 DM으로만 간다)
-        self.public_channel = None
+        # 공개 대결이면 공개매치 채널에 올라간 그 매치의 메시지. 도전장 -> 진행 중 -> 종료로
+        # **한 메시지를 계속 고쳐 쓴다** (매치마다 메시지가 세 개씩 쌓이지 않게).
+        self.public_message = None
         # 웹 관전/조작 화면에 상태를 밀어줄 SSE 구독자들. 참가자와 관전자가 같이 들어 있다.
         # 실측으로 연결 1개가 156KB라 수천 개까지 버티지만, 관전자는 상한을 둔다.
         self.subscribers: set[asyncio.Queue] = set()
@@ -1651,6 +1652,22 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
         if mid == match.match_id:
             del match_tokens[token]
 
+    # 공개 대결이면 채널에 남아 있는 메시지를 '종료'로 바꾼다. 안 그러면 끝난 매치가
+    # 계속 '진행 중'으로 보이고, 이미 죽은 관전 링크를 누르게 된다.
+    if match.public_message is not None:
+        if reason_key:
+            detail = get_msg(match.lang, reason_key)
+        elif winner_id is None:
+            detail = get_msg(match.lang, "match_public_result_draw",
+                             a=match.challenger.wins, b=match.opponent.wins)
+        else:
+            detail = get_msg(match.lang, "match_public_result_win",
+                             winner=match.sides[winner_id].user.display_name,
+                             a=match.challenger.wins, b=match.opponent.wins)
+        await edit_public_match(match.public_message, match.lang, match.challenger.user,
+                                match.opponent.user, match.wager,
+                                state="ended", detail=detail)
+
     # 승패와 포인트 증감은 전부 웹 화면에서 보여준다 — 디스코드로는 아무것도 보내지 않는다.
     for side in (match.challenger, match.opponent):
         active_matches.pop(side.user.id, None)
@@ -1739,17 +1756,75 @@ async def resolve_round(match: PvpMatch) -> None:
                      else b.user.id if b.wins > a.wins else None)
         await finish_match(match, winner_id)
 
+def public_match_channel(channel) -> "discord.TextChannel | None":
+    """공개 대결을 올릴 채널 — 패널을 누른 채널이 **아니라 같은 카테고리의 공개매치 채널**이다.
+
+    패널 채널(🕹️오락실)에 도전장과 관전 링크가 쌓이면 버튼 패널이 위로 밀려 올라가
+    정작 기능을 쓰기 어려워진다. 그래서 언어 카테고리마다 따로 둔 채널
+    (`panel_config.categories[*].match_channel`)로 보낸다.
+    """
+    category = getattr(channel, "category", None)
+    if category is None:
+        return None
+    conf = config.get("panel_config", {}).get("categories", {}).get(category.name, {})
+    name = conf.get("match_channel")
+    return discord.utils.get(category.text_channels, name=name) if name else None
+
+
+def public_match_channel_name(channel) -> str:
+    """설정에 적힌 공개매치 채널 이름 (안내 문구용 — 채널이 실제로 없어도 이름은 알려준다)."""
+    category = getattr(channel, "category", None)
+    conf = config.get("panel_config", {}).get("categories", {}).get(
+        getattr(category, "name", ""), {})
+    return conf.get("match_channel", "")
+
+
+def public_match_embed(lang: str, challenger, opponent, wager: int, *,
+                       state: str, url: str = "", detail: str = "") -> discord.Embed:
+    """공개매치 채널에 올라가는 매치 카드. `state`는 live(진행 중) / ended(종료)."""
+    lines = [
+        get_msg(lang, "match_public_players",
+                challenger=challenger.display_name, opponent=opponent.display_name),
+        get_msg(lang, "match_public_wager", wager=wager) if wager
+        else get_msg(lang, "match_public_friendly"),
+    ]
+    if detail:
+        lines.append(detail)
+    if url:
+        lines.append(get_msg(lang, "match_public_spectate", url=url))
+    return discord.Embed(
+        title=get_msg(lang, f"match_public_{state}_title"),
+        description="\n".join(lines),
+        color=discord.Color.green() if state == "live" else discord.Color.dark_grey(),
+    )
+
+
+async def edit_public_match(message, lang: str, challenger, opponent, wager: int, *,
+                            state: str, url: str = "", detail: str = "") -> None:
+    """공개매치 메시지를 새 상태로 바꾼다. 버튼은 떼어낸다 (누를 수 있는 시점이 지났으므로)."""
+    if message is None:
+        return
+    try:
+        await message.edit(
+            embed=public_match_embed(lang, challenger, opponent, wager,
+                                     state=state, url=url, detail=detail),
+            view=None)
+    except discord.HTTPException:
+        pass
+
+
 class MatchInviteView(discord.ui.View):
     """도전장 DM에 붙는 수락/거부 버튼."""
 
     def __init__(self, match_id: int, challenger: discord.User, opponent: discord.User,
-                 wager: int, lang: str, public_channel=None):
+                 wager: int, lang: str):
         super().__init__(timeout=config["pvp_config"]["invite_timeout_seconds"])
         self.match_id, self.challenger, self.opponent = match_id, challenger, opponent
         self.wager, self.lang = wager, lang
         self.answered = False
-        # 공개 대결이면 관전 링크를 뿌릴 채널. 비공개면 None이고 링크는 각자 DM으로 간다.
-        self.public_channel = public_channel
+        # 공개 대결이면 start_match가 공개매치 채널에 올린 메시지를 여기에 넣어준다.
+        # 비공개면 None이고 도전장은 상대 DM으로만 간다.
+        self.public_message = None
 
         accept = discord.ui.Button(label=get_msg(lang, "match_accept"), style=discord.ButtonStyle.success)
         decline = discord.ui.Button(label=get_msg(lang, "match_decline"), style=discord.ButtonStyle.secondary)
@@ -1791,7 +1866,7 @@ class MatchInviteView(discord.ui.View):
         challenger_side = PvpSide(self.challenger, decks[self.challenger.id])
         opponent_side = PvpSide(self.opponent, decks[self.opponent.id])
         match = PvpMatch(self.match_id, challenger_side, opponent_side, self.wager, self.lang)
-        match.public_channel = self.public_channel
+        match.public_message = self.public_message
         live_matches[self.match_id] = match   # 웹이 match_id로 찾아올 수 있게 등록
 
         # 웹 화면 링크. 참가자에게는 **토큰이 붙은 링크**(카드 제출 가능)를 DM으로 주고,
@@ -1806,22 +1881,19 @@ class MatchInviteView(discord.ui.View):
             except discord.HTTPException:
                 pass   # DM이 막혀도 디스코드 선택 메뉴로 진행할 수 있으므로 매치는 계속한다
 
-        if self.public_channel is not None:
+        if self.public_message is not None:
+            # 공개 대결은 도전장을 지우지 않고 **그 메시지를 '진행 중'으로 고쳐 쓴다** —
+            # 관전 링크를 새 메시지로 또 보내면 매치 하나에 메시지가 여러 개 쌓인다.
+            await edit_public_match(self.public_message, self.lang, self.challenger,
+                                    self.opponent, self.wager, state="live",
+                                    url=f"{base}/match?id={self.match_id}")
+        else:
+            # 비공개 도전장은 수락한 뒤 할 일이 없다(버튼도 죽었고 진행은 웹에서 한다).
+            # 그대로 두면 DM에 쓸모없는 메시지가 쌓이므로 지운다 — 링크는 위에서 따로 보냈다.
             try:
-                await self.public_channel.send(get_msg(
-                    self.lang, "match_link_spectate",
-                    challenger=self.challenger.display_name,
-                    opponent=self.opponent.display_name,
-                    url=f"{base}/match?id={self.match_id}"))
+                await interaction.delete_original_response()
             except discord.HTTPException:
                 pass
-
-        # 수락한 뒤에는 도전장이 할 일이 없다(버튼도 죽었고 진행은 웹에서 한다).
-        # 그대로 두면 DM에 쓸모없는 메시지가 쌓이므로 지운다 — 링크는 바로 위에서 따로 보냈다.
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            pass
 
         # 덱 선택도 웹에서 한다. 제한 시간 안에 양쪽이 다 고르지 않으면 매치를 취소하고
         # 판돈을 돌려준다 (예전에는 DeckPickView의 timeout이 이 역할을 했다).
@@ -1836,8 +1908,14 @@ class MatchInviteView(discord.ui.View):
         async with bot.pool.acquire() as conn:
             await cancel_match(conn, self.match_id)
 
-        await interaction.response.edit_message(
-            embed=discord.Embed(description=get_msg(self.lang, "match_declined_ok")), view=None)
+        if self.public_message is not None:
+            await interaction.response.defer()
+            await edit_public_match(self.public_message, self.lang, self.challenger,
+                                    self.opponent, self.wager, state="ended",
+                                    detail=get_msg(self.lang, "match_public_declined"))
+        else:
+            await interaction.response.edit_message(
+                embed=discord.Embed(description=get_msg(self.lang, "match_declined_ok")), view=None)
         try:
             await self.challenger.send(get_msg(self.lang, "match_declined_by_opponent",
                                                opponent=self.opponent.display_name))
@@ -1849,15 +1927,19 @@ class MatchInviteView(discord.ui.View):
             return
         async with bot.pool.acquire() as conn:
             await cancel_match(conn, self.match_id)
+        # 공개 도전장은 채널에 남아 있으므로 '무산됨'으로 바꿔준다. 안 그러면 죽은 버튼이
+        # 계속 보이고, 누르면 "상호작용 실패"만 뜬다.
+        await edit_public_match(self.public_message, self.lang, self.challenger,
+                                self.opponent, self.wager, state="ended",
+                                detail=get_msg(self.lang, "match_public_expired"))
 
 async def start_match(interaction: discord.Interaction, opponent: discord.Member,
                       wager: int | None, public: bool = False) -> None:
-    """도전장을 만들어 상대 DM으로 보낸다. `wager=None`이면 친선전(판돈 없음).
+    """도전장을 만들어 보낸다. `wager=None`이면 친선전(판돈 없음).
 
-    판돈전(`/match`)과 친선전(`/friendly`)을 **별도 명령어로 나눈 이유**: 디스코드 슬래시 명령은
-    다른 옵션 값에 따라 특정 옵션을 숨길 수 없다. 하나의 명령어에 모드 선택으로 합쳐두면
-    친선전을 골라도 판돈 입력칸이 그대로 보여서, 판돈을 적어 넣고 "걸었다"고 오해하게 된다.
-    명령어를 나누면 친선전에는 판돈 입력칸 자체가 없어 그 오해가 원천적으로 불가능해진다.
+    `public=False`면 상대 DM으로만, `public=True`면 같은 카테고리의 공개매치 채널로 간다.
+    판돈은 모달에서 숫자 한 칸으로 받고 **0이 곧 친선전**이라 예전처럼 명령어를 둘로
+    나눌 필요가 없다 (슬래시 명령은 모드에 따라 판돈 칸을 숨길 수 없어서 나눠야 했다).
     """
     await interaction.response.defer(ephemeral=True)
     lang = resolve_lang(interaction)
@@ -1901,33 +1983,39 @@ async def start_match(interaction: discord.Interaction, opponent: discord.Member
     if wager:
         embed.set_footer(text=get_msg(lang, "match_invite_footer", wager=wager))
 
-    # 공개 대결이면 명령어를 실행한 채널에 도전장을 한 번만 뿌린다 (관전자가 보고 따라올 수 있게).
-    # 비공개면 지금까지처럼 상대 DM으로만 간다.
+    # 공개 대결이면 **패널 채널이 아니라 같은 카테고리의 공개매치 채널**에 도전장을 올린다.
+    # 패널 채널에 도전장과 관전 링크가 쌓이면 버튼 패널이 위로 밀려 올라가 기능을 쓰기 어려워진다.
     # 공개 채널에서는 아무나 버튼을 누를 수 있으므로 MatchInviteView.interaction_check가
     # 도전받은 본인인지 반드시 확인한다 — 없으면 남의 판돈이 묶인다.
-    channel = interaction.channel if public else None
-    view = MatchInviteView(match_id, interaction.user, opponent, wager, lang, channel)
+    view = MatchInviteView(match_id, interaction.user, opponent, wager, lang)
+    channel = None
+
+    async def abort(key: str, **kwargs):
+        """도전장을 띄우지 못하면 매치를 취소해야 한다 — 안 그러면 판돈이 묶인 채 남는다."""
+        async with bot.pool.acquire() as conn:
+            await cancel_match(conn, match_id)
+        return await fail(key, **kwargs)
 
     if public:
+        channel = public_match_channel(interaction.channel)
+        if channel is None:
+            return await abort("match_err_no_match_channel",
+                               channel=public_match_channel_name(interaction.channel) or "?")
         embed.description = (f"{opponent.mention}\n" + embed.description)
         try:
-            await interaction.channel.send(embed=embed, view=view)
-        except (discord.Forbidden, AttributeError):
-            # 채널에 쓸 권한이 없거나(DM에서 실행 등) 채널이 없으면 공개로 진행할 수 없다
-            async with bot.pool.acquire() as conn:
-                await cancel_match(conn, match_id)
-            return await fail("match_err_channel")
+            view.public_message = await channel.send(embed=embed, view=view)
+        except discord.Forbidden:
+            return await abort("match_err_channel")
     else:
         try:
             await opponent.send(embed=embed, view=view)
         except discord.Forbidden:
-            async with bot.pool.acquire() as conn:
-                await cancel_match(conn, match_id)
-            return await fail("match_err_dm_opponent", opponent=opponent.display_name)
+            return await abort("match_err_dm_opponent", opponent=opponent.display_name)
 
     await interaction.followup.send(
         get_msg(lang, "match_sent_public" if public else "match_sent",
-                opponent=opponent.display_name), ephemeral=True)
+                opponent=opponent.display_name,
+                channel=channel.mention if channel else ""), ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1992,20 +2080,21 @@ class MatchOpponentView(discord.ui.View):
     def __init__(self, lang: str):
         super().__init__(timeout=120)
         self.lang = lang
-        select = discord.ui.UserSelect(placeholder=get_msg(lang, "panel_match_pick_opponent"),
-                                       min_values=1, max_values=1)
-        select.callback = self.on_pick
-        self.add_item(select)
+        self.select = discord.ui.UserSelect(placeholder=get_msg(lang, "panel_match_pick_opponent"),
+                                            min_values=1, max_values=1)
+        self.select.callback = self.on_pick
+        self.add_item(self.select)
 
     async def on_pick(self, interaction: discord.Interaction):
-        opponent = interaction.data["resolved"]["users"]
-        opponent_id = int(next(iter(opponent)))
-        member = interaction.guild.get_member(opponent_id) if interaction.guild else None
-        if member is None:
-            return await interaction.response.send_message(
-                get_msg(self.lang, "match_err_generic"), ephemeral=True)
+        # **`guild.get_member()`로 상대를 찾지 말 것.** members 인텐트는 특권 인텐트라 꺼져 있고
+        # (`Intents.default()`), 그러면 멤버 캐시에는 음성 채널에 들어온 사람만 들어온다
+        # (`MemberCacheFlags.from_intents` -> joined=False/voice=True). 그래서 상대를 골라도
+        # 대부분 None이 나와 "An error occurred"만 뜨고 대결이 시작되지 않았다.
+        # `UserSelect.values`는 인터랙션 payload의 resolved에서 바로 만들어져 캐시가 필요 없고,
+        # 길드 안에서는 항상 Member로 온다 (discord.py 2.7.1 소스로 확인).
+        opponent = self.select.values[0]
         # 상대 선택은 새 인터랙션이라 여기서 모달을 여는 건 첫 응답 -> 허용된다
-        await interaction.response.send_modal(MatchWagerModal(self.lang, member))
+        await interaction.response.send_modal(MatchWagerModal(self.lang, opponent))
 
 
 class MatchWagerModal(discord.ui.Modal):
@@ -2036,6 +2125,39 @@ class MatchWagerModal(discord.ui.Modal):
         await start_match(interaction, self.opponent, wager or None, public)
 
 
+async def close_stale_public_matches(channel, lang: str, limit: int = 50) -> int:
+    """봇이 켜질 때, 채널에 남아 있는 옛 공개 매치 메시지를 '종료'로 닫는다.
+
+    매치 진행 상태는 메모리에만 있어서 재시작하면 사라진다 (판돈은 refund_stale_matches가
+    반환한다). 그런데 **채널 메시지는 그대로 남아** 계속 '진행 중'으로 보이고, 이미 죽은 관전
+    링크와 눌러도 "상호작용 실패"만 뜨는 수락 버튼이 남는다. Render 무료 플랜은 스핀다운으로
+    재시작이 잦아서 이 정리가 없으면 채널이 유령 매치로 뒤덮인다.
+    """
+    stale = {get_msg(lang, "match_invite_title"), get_msg(lang, "match_public_live_title")}
+    closed = 0
+    async for message in channel.history(limit=limit):
+        if message.author != bot.user or not message.embeds:
+            continue
+        embed = message.embeds[0]
+        if embed.title not in stale:
+            continue
+        # 대전 링크(죽었다)·남은 시간 표시(지났다)·멘션은 빼고, 누가 붙었는지만 남긴다
+        lines = [line for line in (embed.description or "").split("\n")
+                 if line and "/match?id=" not in line and "<t:" not in line
+                 and not line.startswith("<@")]
+        lines.append(get_msg(lang, "match_public_restarted"))
+        try:
+            await message.edit(
+                embed=discord.Embed(title=get_msg(lang, "match_public_ended_title"),
+                                    description="\n".join(lines),
+                                    color=discord.Color.dark_grey()),
+                view=None)
+            closed += 1
+        except discord.HTTPException:
+            pass
+    return closed
+
+
 async def setup_arcade_panel(guild: discord.Guild) -> int:
     """설정에 적힌 카테고리/채널마다 기능 버튼 메시지를 새로 올린다.
 
@@ -2063,6 +2185,17 @@ async def setup_arcade_panel(guild: discord.Guild) -> int:
             posted += 1
         except discord.HTTPException as e:
             print(f"⚠️ 오락실 패널 게시 실패 ({guild.name} / {channel.name}): {e}")
+
+        # 공개 매치 채널에 남은 옛 매치도 같이 닫아준다 (재시작 때 메모리 상태가 날아갔으므로)
+        match_channel = discord.utils.get(category.text_channels,
+                                          name=conf.get("match_channel", ""))
+        if match_channel is not None:
+            try:
+                stale = await close_stale_public_matches(match_channel, lang)
+                if stale:
+                    print(f"🧹 재시작 전 공개 매치 {stale}건을 종료로 정리 ({match_channel.name})")
+            except discord.HTTPException as e:
+                print(f"⚠️ 공개 매치 정리 실패 ({guild.name} / {match_channel.name}): {e}")
     return posted
 
 
