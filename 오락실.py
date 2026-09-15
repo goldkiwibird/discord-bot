@@ -26,16 +26,71 @@ load_dotenv()  # 로컬에 .env 파일이 있으면 읽어서 환경변수로 �
 
 CONFIG_FILE = "오락실.json"
 KST = ZoneInfo("Asia/Seoul")
-# hero_base_stats 뷰(직업 기본 스탯 + 종족 보정)와 user_cards의 bonus_* 컬럼이 쓰는 스탯 5종
+# 영웅 기본 스탯(직업 기본값 + 종족 보정)과 user_cards의 bonus_* 컬럼이 쓰는 스탯 5종
 STAT_KEYS = ("attack", "hp", "defense", "accuracy", "evasion")
 
 def load_config() -> dict:
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-# 슬래시 명령어 데코레이터가 모듈 로드 시점에 바로 실행되기 때문에,
-# on_ready가 아니라 여기서 동기적으로 한 번 읽어들인다.
+# 설정은 모듈을 읽을 때 한 번 읽어둔다 (패널 문구·PVP 규칙 등이 클래스 정의 시점부터 필요하다).
 config = load_config()
+
+
+# 영웅 마스터 데이터. **누구인지(id/이름/등급/종족/직업/속성/번역)는 DB의 `heroes` 테이블**에 있고,
+# **수치(직업 기본값/종족 보정)는 오락실.json의 `hero_stat_config`**에 있다. 기본 스탯은 저장하지
+# 않고 둘을 더해서 만든다 — 예전 Neon의 `hero_base_stats` 뷰가 하던 계산 그대로라, 직업이나
+# 종족 수치를 고치면 54종에 자동 반영된다 (강화분은 user_cards의 bonus_*로 따로 더한다).
+#
+# **봇이 켜질 때 한 번만 읽어서 여기에 세워둔다.** 54행짜리 고정 데이터인데 Neon은 원격이라
+# 조회 한 번이 왕복 ~190ms고, 화면마다 다시 물어보면 그만큼 그대로 느려진다 (소환 이력은 예전에
+# 이것 때문에 왕복을 한 번 더 해서 427ms가 걸렸다). 대신 **영웅 행을 고치면 봇을 다시 켜야
+# 반영된다** — 소환 로스터는 예전부터 그랬으므로 달라진 제약은 없다.
+HEROES: dict[int, dict] = {}                    # id -> 영웅 (기본 스탯까지 계산된 상태)
+HEROES_BY_GRADE: dict[str, list[dict]] = {}     # 소환이 쓰는 등급별 묶음
+
+
+def hero_base_stats(job: str, race: str) -> dict[str, int]:
+    """직업 기본값 + 종족 보정 = 그 영웅의 기본 스탯."""
+    conf = config["hero_stat_config"]
+    job_stats = conf["job_base_stats"][job]
+    race_bonus = conf["race_stat_bonus"][race]
+    return {key: job_stats[key] + race_bonus[key] for key in STAT_KEYS}
+
+
+async def load_hero_master(conn) -> int:
+    """`heroes`를 읽어 HEROES / HEROES_BY_GRADE를 채운다. 읽은 영웅 수를 돌려준다.
+
+    설정에 없는 직업·종족이 섞여 있으면 그 영웅만 건너뛰고 경고한다 — 통째로 죽으면
+    출석·포인트까지 같이 멈추기 때문이다.
+    """
+    HEROES.clear()
+    HEROES_BY_GRADE.clear()
+    try:
+        rows = await conn.fetch(
+            "SELECT id, name, element, grade, race, job, name_en, name_zh_tw FROM heroes")
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError) as e:
+        print(f"⚠️ {type(e).__name__}: 소환/덱 기능이 비활성화됩니다. "
+              f"hero-cards의 heroes.sql / hero_name_translations.sql을 Neon에 반영하세요.")
+        return 0
+
+    skipped = []
+    for row in rows:
+        hero = dict(row)
+        try:
+            hero.update(hero_base_stats(hero["job"], hero["race"]))
+        except KeyError as missing:
+            skipped.append((hero["id"], missing.args[0]))
+            continue
+        HEROES[hero["id"]] = hero
+    if skipped:
+        print(f"⚠️ 직업/종족 수치가 오락실.json에 없어 건너뛴 영웅: {skipped}")
+
+    # 등급별 묶음. 정렬은 예전 DB(C.UTF-8 콜레이션)가 주던 순서와 같다.
+    for hero in sorted(HEROES.values(), key=lambda h: (h["grade"], h["id"])):
+        HEROES_BY_GRADE.setdefault(hero["grade"], []).append(hero)
+    return len(HEROES)
+
 
 def today_kst() -> date:
     return datetime.now(KST).date()
@@ -76,8 +131,8 @@ def get_msg(locale_value: str, key: str, **kwargs) -> str:
 async def ensure_schema(conn):
     """봇이 직접 관리하는 테이블을 만든다.
 
-    영웅 마스터 데이터(heroes / job_base_stats / race_stat_bonus / hero_base_stats)는
-    hero-cards 폴더의 SQL로 따로 넣는 자료라 여기서 만들지 않는다.
+    영웅 마스터 데이터(heroes)는 hero-cards 폴더의 SQL로 따로 넣는 자료라 여기서 만들지 않는다.
+    직업/종족 수치는 DB가 아니라 오락실.json의 hero_stat_config에 있다 (load_hero_master 참고).
     """
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -206,24 +261,16 @@ class ArcadeBot(commands.Bot):
             await self.tree.sync()
 
     async def load_heroes(self, conn):
-        try:
-            rows = await conn.fetch(
-                "SELECT id, name, name_en, name_zh_tw, grade, job, element, "
-                "attack, hp, defense, accuracy, evasion FROM hero_base_stats"
-            )
-        except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError) as e:
-            # 영웅 마스터 데이터(또는 이름 번역 컬럼)가 아직 Neon에 안 들어간 상태.
-            # 소환만 막고 출석/포인트는 그대로 쓸 수 있게 둔다.
-            self.heroes_by_grade = {}
-            print(f"⚠️ {type(e).__name__}: 소환 기능이 비활성화됩니다. "
-                  f"hero-cards의 heroes.sql / job_race_stats.sql / hero_name_translations.sql을 "
-                  f"Neon에 순서대로 반영하세요.")
-            return
+        """시작할 때 한 번 영웅 마스터 데이터를 읽어 메모리에 세운다 (소환 로스터 포함).
 
-        self.heroes_by_grade = {}
-        for row in rows:
-            self.heroes_by_grade.setdefault(row["grade"], []).append(dict(row))
-        print(f"영웅 데이터 {len(rows)}종 로드: " + ", ".join(f"{g} {len(v)}종" for g, v in self.heroes_by_grade.items()))
+        화면마다 다시 조회하지 않으려고 여기서 한 번만 읽는다. **영웅 행을 고쳤으면 봇을
+        다시 켜야 반영된다.**
+        """
+        count = await load_hero_master(conn)
+        self.heroes_by_grade = {grade: list(heroes) for grade, heroes in HEROES_BY_GRADE.items()}
+        if count:
+            print(f"영웅 데이터 {count}종 로드: "
+                  + ", ".join(f"{g} {len(v)}종" for g, v in self.heroes_by_grade.items()))
 
 bot = ArcadeBot()
 
@@ -525,17 +572,25 @@ def battle_stat_detail(me: dict, opp: dict) -> dict:
     rule = config["pvp_config"]["job_matchup"][me["job"]][opp["job"]]
 
     if rule == "OWN_LOWEST":  # 사제를 상대하는 쪽은 자기 최저 스탯을 쓴다
-        stat = min(STAT_KEYS, key=lambda key: me[key])
+        lowest = min(me[key] for key in STAT_KEYS)
+        tied = [key for key in STAT_KEYS if me[key] == lowest]
     elif rule == "BOTH_HIGHEST":  # 사제 vs 사제는 각자 자기 최고 스탯
-        stat = max(STAT_KEYS, key=lambda key: me[key])
+        highest = max(me[key] for key in STAT_KEYS)
+        tied = [key for key in STAT_KEYS if me[key] == highest]
     elif rule == "MATCH_OPP_LOWEST":
         # 사제는 상대의 최저 스탯과 같은 카테고리를 쓴다.
         # 최저가 여러 개면 그중 사제 본인 수치가 가장 높은 것을 고른다 (상대 수치는 어느 쪽이든 동일).
         lowest = min(opp[key] for key in STAT_KEYS)
-        stat = max((key for key in STAT_KEYS if opp[key] == lowest), key=lambda key: me[key])
+        candidates = [key for key in STAT_KEYS if opp[key] == lowest]
+        best = max(me[key] for key in candidates)
+        tied = [key for key in candidates if me[key] == best]
     else:
-        stat = rule
-    return {"value": me[stat], "stat": stat, "rule": rule}
+        tied = [rule]
+    # 동점이면 STAT_KEYS 순서상 첫 번째를 쓴다 — 예전 min()/max()가 고르던 것과 같은 카드다.
+    # `stats`는 **화면에서 빛낼 목록**이다: 최저/최고가 여러 개로 갈리면 전부 빛나야
+    # "왜 이 수치가 나왔는지"가 보인다 (값 자체는 어느 쪽을 골라도 같다).
+    stat = tied[0]
+    return {"value": me[stat], "stat": stat, "stats": tied, "rule": rule}
 
 def battle_stat_value(me: dict, opp: dict) -> int:
     """상성표에 따라 이 카드가 이번 대결에서 내밀 수치 (근거가 필요하면 battle_stat_detail)."""
@@ -549,6 +604,7 @@ def battle_detail(me: dict, opp: dict) -> dict:
         "value": stat["value"] + element["bonus"],
         "base": stat["value"],
         "stat": stat["stat"],
+        "stats": stat["stats"],     # 동점으로 걸린 스탯까지 — 화면이 전부 빛나게 한다
         "rule": stat["rule"],
         "element_bonus": element["bonus"],
         "element_reason": element["reason"],
@@ -732,33 +788,33 @@ async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
         """
         SELECT c.hero_id, c.enhance_count,
                c.bonus_attack, c.bonus_hp, c.bonus_defense, c.bonus_accuracy, c.bonus_evasion,
-               h.name, h.name_en, h.name_zh_tw, h.grade, h.job, h.element,
-               h.attack, h.hp, h.defense, h.accuracy, h.evasion,
                COALESCE((SELECT array_agg(d.deck_number ORDER BY d.deck_number)
                          FROM user_decks d
                          WHERE d.user_id = c.user_id AND d.hero_id = c.hero_id),
                         '{}') AS deck_numbers
         FROM user_cards c
-        JOIN hero_base_stats h ON h.id = c.hero_id
         WHERE c.user_id = $1
-        ORDER BY h.grade, h.id
         """,
         user_id,
     )
+    # 영웅 정보는 파일에 있으므로 조인하지 않는다. 정렬은 예전 `ORDER BY h.grade, h.id`와 같다
+    # (DB 콜레이션이 C.UTF-8이라 파이썬 문자열 정렬과 바이트 순서가 동일하다).
+    rows = sorted((row for row in rows if row["hero_id"] in HEROES),
+                  key=lambda row: (HEROES[row["hero_id"]]["grade"], row["hero_id"]))
 
     cards = []
     for row in rows:
-        hero = dict(row)
+        hero = HEROES[row["hero_id"]]
         bonus = {key: row[f"bonus_{key}"] for key in STAT_KEYS}
         cards.append({
             "hero_id": row["hero_id"],
             "name": hero_display_name(hero, lang),
-            "image_name": row["name"],  # 이미지 파일명은 항상 한글 원본
-            "grade": row["grade"],
-            "job": row["job"],
-            "element": row["element"],  # 필터용 (속성/등급/직업)
+            "image_name": hero["name"],  # 이미지 파일명은 항상 한글 원본
+            "grade": hero["grade"],
+            "job": hero["job"],
+            "element": hero["element"],  # 필터용 (속성/등급/직업)
             # 보유 카드 화면이라 강화분이 반영된 현재 스탯 + 증가분을 같이 내려준다 ("10 (+3)" 표기용)
-            "stats": {key: row[key] + bonus[key] for key in STAT_KEYS},
+            "stats": {key: hero[key] + bonus[key] for key in STAT_KEYS},
             "bonus": bonus,
             "enhance_count": row["enhance_count"],
             # 같은 카드가 여러 덱에 들어갈 수 있으므로 목록으로 내려준다.
@@ -771,10 +827,11 @@ async def fetch_deck_page_data(conn, user_id: int, lang: str) -> dict:
 async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> list[dict]:
     """소환 이력. 최근 것부터 `limit`건 (1건 = 소환 1회, 10연이면 카드 10장이 한 건에 들어 있음).
 
-    영웅 이름/등급은 로그에 복사해 넣지 않고 `hero_base_stats`에서 조회한다 — 복사해 두면
+    영웅 이름/등급은 로그에 복사해 넣지 않고 마스터 데이터(`HEROES`)에서 조회한다 — 복사해 두면
     나중에 마스터 데이터를 고쳤을 때 과거 기록만 옛 값으로 남아 어긋난다.
-    `bot.heroes_by_grade`(메모리 로스터)를 쓰지 않는 이유는 봇이 켜진 상태에만 의존하게 되어
-    조회 함수를 단독으로 검증할 수 없고, 로스터가 비어 있으면 카드가 조용히 사라지기 때문이다.
+    `bot.heroes_by_grade`(봇 인스턴스의 로스터)가 아니라 모듈 상수를 보는 이유는 봇이 켜진
+    상태에만 의존하지 않기 위함이다 — 그래야 이 함수를 단독으로 검증할 수 있고, 로스터가
+    비어 있어서 카드가 조용히 사라지는 일도 없다 (실제로 테스트가 그걸 잡은 적이 있다).
     """
     rows = await conn.fetch(
         """
@@ -789,22 +846,11 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
     if not rows:
         return []
 
-    # 등장한 영웅만 한 번에 조회해서 id -> 정보로 만든다 (행마다 조인하지 않도록)
-    hero_ids = {hero_id for row in rows for hero_id in row["hero_ids"]}
-    heroes = {
-        hero["id"]: dict(hero)
-        for hero in await conn.fetch(
-            "SELECT id, name, name_en, name_zh_tw, grade, job, element "
-            "FROM hero_base_stats WHERE id = ANY($1::int[])",
-            list(hero_ids),
-        )
-    }
-
     history = []
     for row in rows:
         cards = []
         for hero_id, outcome in zip(row["hero_ids"], row["outcomes"]):
-            hero = heroes.get(hero_id)
+            hero = HEROES.get(hero_id)
             if hero is None:      # 마스터 데이터에서 빠진 영웅 — 이름을 못 찾아도 기록은 보여준다
                 cards.append({"name": f"#{hero_id}", "image_name": "", "grade": "R",
                               "job": "warrior", "element": "", "outcome": outcome})
@@ -874,11 +920,8 @@ async def fetch_battle_decks(conn, user_id: int, lang: str) -> dict[int, list[di
     rows = await conn.fetch(
         """
         SELECT d.deck_number, d.slot, d.hero_id,
-               h.name, h.name_en, h.name_zh_tw, h.grade, h.job, h.element,
-               h.attack, h.hp, h.defense, h.accuracy, h.evasion,
                c.bonus_attack, c.bonus_hp, c.bonus_defense, c.bonus_accuracy, c.bonus_evasion
         FROM user_decks d
-        JOIN hero_base_stats h ON h.id = d.hero_id
         JOIN user_cards c ON c.user_id = d.user_id AND c.hero_id = d.hero_id
         WHERE d.user_id = $1
         ORDER BY d.deck_number, d.slot
@@ -888,17 +931,20 @@ async def fetch_battle_decks(conn, user_id: int, lang: str) -> dict[int, list[di
 
     decks: dict[int, list[dict]] = {}
     for row in rows:
+        hero = HEROES.get(row["hero_id"])
+        if hero is None:      # 마스터 데이터에서 빠진 영웅 — 덱이 5장을 못 채워 제외된다
+            continue
         # PVP는 유저가 실제로 보유한 카드로 싸우므로 강화분이 반영된 현재 스탯을 쓴다
         card = {
             "hero_id": row["hero_id"],
-            "name": row["name"],  # 이미지 파일명용 한글 원본
-            "display_name": hero_display_name(dict(row), lang),
-            "grade": row["grade"],
-            "job": row["job"],
-            "element": row["element"],
+            "name": hero["name"],  # 이미지 파일명용 한글 원본
+            "display_name": hero_display_name(hero, lang),
+            "grade": hero["grade"],
+            "job": hero["job"],
+            "element": hero["element"],
             "bonus": {key: row[f"bonus_{key}"] for key in STAT_KEYS},
         }
-        card.update({key: row[key] + card["bonus"][key] for key in STAT_KEYS})
+        card.update({key: hero[key] + card["bonus"][key] for key in STAT_KEYS})
         decks.setdefault(row["deck_number"], []).append(card)
 
     deck_size = config["deck_config"]["deck_size"]
@@ -1242,6 +1288,7 @@ async def handle_match_labels(request):
                 "pvp_reason_own_lowest", "pvp_reason_both_highest", "pvp_reason_match_opp_lowest",
                 "pvp_reason_direct", "pvp_reason_element_cycle", "pvp_reason_element_light",
                 "pvp_reason_element_basic", "pvp_reason_element_dark",
+                "web_match_element_bonus",
             )
         },
     })
@@ -1601,7 +1648,6 @@ class PvpMatch:
     def other(self, user_id: int) -> PvpSide:
         return self.opponent if user_id == self.challenger.user.id else self.challenger
 
-active_matches: dict[int, PvpMatch] = {}  # user_id -> 참여 중인 매치
 live_matches: dict[int, PvpMatch] = {}   # match_id -> 매치 (웹 관전/조작이 id로 찾는다)
 # 웹에서 카드를 낼 수 있는 권한. 관전 링크는 토큰이 없어 읽기 전용이 된다.
 match_tokens: dict[str, tuple[int, int]] = {}   # token -> (match_id, user_id)
@@ -1690,8 +1736,6 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
                                 state="ended", detail=detail)
 
     # 승패와 포인트 증감은 전부 웹 화면에서 보여준다 — 디스코드로는 아무것도 보내지 않는다.
-    for side in (match.challenger, match.opponent):
-        active_matches.pop(side.user.id, None)
 
 
 async def start_round(match: PvpMatch) -> None:
@@ -1936,8 +1980,6 @@ class MatchInviteView(discord.ui.View):
 
         # 덱 선택도 웹에서 한다. 제한 시간 안에 양쪽이 다 고르지 않으면 매치를 취소하고
         # 판돈을 돌려준다 (예전에는 DeckPickView의 timeout이 이 역할을 했다).
-        for side in (challenger_side, opponent_side):
-            active_matches[side.user.id] = match
         match.arm(config["pvp_config"]["pick_timeout_seconds"], lambda: deck_timed_out(match))
         await match.broadcast()
 
