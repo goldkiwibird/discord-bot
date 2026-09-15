@@ -88,22 +88,44 @@
           overflow: hidden; cursor: pointer; position: relative; transition: border-color .12s, transform .12s; }
   .card:hover { transform: translateY(-2px); }
   .card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,101,242,.35); }
-  /* 카드 그림 = 일러스트 + 직업/속성 아이콘.
-     등급 프레임(512x768 PNG 4장, 합계 2.27MB)은 일부러 안 쓴다 — 화면 표시 크기가 100px대라
-     들이는 용량 대비 얻는 게 적다. 아이콘 2종은 합쳐서 0.11MB뿐이고 종류가 고정(6+6)이라
-     카드가 몇 장이든 브라우저가 한 번만 받는다.
-     위쪽 두 모서리는 등급 배지(.grade)와 선택 번호(.pick)가 이미 쓰고 있어서 아래쪽에 놓는다. */
-  .art { position: relative; width: 100%; aspect-ratio: 402 / 591; background: #14161b; }
-  .art .portrait { width: 100%; height: 100%; object-fit: cover; object-position: top center;
-                   display: block; }
-  .art .icon { position: absolute; bottom: 5px; width: 26%; max-width: 34px;
-               filter: drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
-  .art .elem { left: 5px; }
-  .art .job { right: 5px; }
+  /* 카드 그림은 **대전 화면(match_page.html)과 똑같은 구성**이다 —
+     등급 프레임 + 일러스트 + 상단 직업/속성 아이콘 + 하단 능력치.
+     좌표는 전부 512x768 프레임 대비 비율이라 카드 크기를 바꿔도 정렬이 유지된다.
+     **프레임의 일러스트 영역은 투명이 아니라 불투명 텍스처**라 프레임을 깔고 그 위에
+     일러스트를 올려야 한다 — 순서를 바꾸면 그림이 가려진다.
+     예전에는 프레임을 뺐다(PNG 4장 2.27MB라 100px대 표시에 비해 과했다). WebP로 바꾸면서
+     4장 합계 257KB가 됐고, 종류가 고정이라 카드가 몇 장이든 한 번만 받으므로 이제 쓴다.
+     등급 배지도 뗐다 — 프레임 색이 등급을 말해준다. */
+  /* 이름/능력치 크기를 카드 폭에 비례시키려고 cqw를 쓰므로 **.art 자신이 컨테이너**여야 한다.
+     .card에만 걸면 소환 이력 카드(.pull)에는 컨테이너가 없어서 cqw가 뷰포트 기준으로 잡히고,
+     스탯 아이콘이 카드 절반을 덮을 만큼 커진다 (실제로 그랬다). */
+  .art { container-type: inline-size;
+         position: relative; width: 100%; aspect-ratio: 512 / 768; }
+  .art > * { position: absolute; }
+  .art .frame { inset: 0; width: 100%; height: 100%; }
+  .art .portrait { left: 7.81%; top: 11.72%; width: 84.18%; height: 50.65%; object-fit: contain; }
+  .art .icon { top: 18.36%; transform: translate(-50%, -50%); }
+  .art .job { left: 84.77%; width: 12.30%; }
+  .art .elem { left: 15.23%; width: 14.65%; }
+  .art .cname { left: 9.77%; top: 5.73%; width: 80.47%; height: 4.56%;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 5.4cqw; font-weight: 700; color: #fff; overflow: hidden; line-height: 1;
+                white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.8); }
+  .art .stat { display: flex; align-items: center; gap: .35em;
+               transform: translateY(-50%); font-size: 8cqw; color: #fff;
+               text-shadow: 0 1px 2px rgba(0,0,0,.85); font-variant-numeric: tabular-nums; }
+  .art .stat img { width: 6.64cqw; height: auto; }
+  .art .st-attack { left: 17.07%; top: 71.85%; }
+  .art .st-hp { left: 59.16%; top: 71.85%; }
+  .art .st-defense { left: 17.07%; top: 79.88%; }
+  .art .st-accuracy { left: 59.16%; top: 79.88%; }
+  .art .st-evasion { left: 17.07%; top: 87.91%; }
+  /* 강화분은 대전 화면엔 없는 정보라 작게 덧붙인다 (보유 카드 화면에서만 의미가 있다) */
+  .art .plus { font-size: .62em; color: var(--ok); text-shadow: 0 1px 2px rgba(0,0,0,.9); }
 
-  .grade { position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 700;
-           padding: 2px 6px; border-radius: 4px; color: #10121a; }
-  .pick { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%;
+  /* 선택 번호는 **왼쪽 위**. 오른쪽 위는 프레임의 직업 아이콘 자리라 겹친다
+     (예전엔 아이콘이 아래쪽에 있어서 오른쪽 위가 비어 있었다). */
+  .pick { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; border-radius: 50%;
           background: var(--accent); color: #fff; font-size: 12px; display: none;
           align-items: center; justify-content: center; }
   .card.selected .pick { display: flex; }
@@ -112,12 +134,10 @@
   .alsomsg { position: absolute; bottom: 6px; left: 6px; font-size: 10px; background: rgba(0,0,0,.72);
              padding: 3px 6px; border-radius: 4px; color: var(--SR); }
   .info { padding: 8px; }
-  .name { font-size: 13px; font-weight: 600; margin-bottom: 6px;
+  /* 카드 위에도 이름이 있지만(프레임 이름칸) 150px 카드에서는 8px 남짓이라, 수십 장을 훑는
+     이 화면에서는 읽을 수 있는 크기로 한 번 더 적는다. */
+  .name { font-size: 13px; font-weight: 600;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 11px; color: var(--dim); }
-  .stat { display: flex; align-items: center; gap: 4px; }
-  .stat img { width: 13px; height: 13px; }
-  .plus { color: var(--ok); }
   .reset-btn { margin-top: 8px; width: 100%; padding: 5px 0; border-radius: 6px; border: 1px solid var(--line);
                background: transparent; color: var(--bad); font-size: 11px; cursor: pointer; }
   .reset-btn:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
@@ -143,7 +163,6 @@
 
 <script>
 const token = new URLSearchParams(location.search).get("token");
-const GRADE_COLOR = { "R": "--R", "R+": "--Rplus", "SR": "--SR", "SSR": "--SSR" };
 
 let data = null;        // 서버에서 받은 전체 데이터
 let currentDeck = 1;    // 지금 편집 중인 덱
@@ -305,19 +324,29 @@ function renderSummons() {
   }
 }
 
-// 카드 그림 한 장의 마크업. 덱 편성과 소환 이력이 같이 쓴다.
-// 아이콘은 종류가 고정(직업 6 + 속성 6)이라 카드가 몇 장이든 브라우저가 한 번만 받아 캐시한다 —
+// 카드 그림 한 장의 마크업. 덱 편성과 소환 이력이 같이 쓰고, **대전 화면과 같은 구성**이다.
+// 프레임/아이콘/스탯 아이콘은 종류가 고정이라 카드가 몇 장이든 브라우저가 한 번만 받아 캐시한다 —
 // 카드 수에 비례해 늘어나는 건 일러스트뿐이다.
-function cardArt(card) {
+// `bonus`를 넘기면 강화분을 작게 덧붙인다 (덱 편성 전용. 소환 결과는 기본 스탯만 보여준다).
+function cardArt(card, bonus) {
   const base = data.image_base_url;
-  const parts = [
-    `<img class="portrait" src="${base}hero/${encodeURIComponent(card.image_name)}${EXT}" alt="" loading="lazy">`,
-    `<img class="icon job" src="${base}job_icon/${card.job}${EXT}" alt="" title="${data.job_labels?.[card.job] || ""}" loading="lazy">`,
-  ];
-  if (card.element) {
-    parts.push(`<img class="icon elem" src="${base}element/${card.element}${EXT}" alt="" title="${data.element_labels?.[card.element] || ""}" loading="lazy">`);
-  }
-  return `<div class="art">${parts.join("")}</div>`;
+  const stats = (data.stat_order || []).map(key => {
+    const value = card.stats?.[key];
+    if (value === undefined) return "";
+    const gained = bonus?.[key];
+    return `<span class="stat st-${key}" title="${data.stat_labels?.[key] || key}">
+              <img src="${base}stat_icon/${key}${EXT}" alt="" loading="lazy">${value}${
+              gained ? `<span class="plus">+${gained}</span>` : ""}</span>`;
+  }).join("");
+  // 프레임을 먼저 깔고 그 위에 일러스트를 올린다 (프레임의 그림칸이 불투명하다)
+  return `<div class="art">
+    <img class="frame" src="${base}card/${encodeURIComponent(card.grade)}${EXT}" alt="" loading="lazy">
+    <img class="portrait" src="${base}hero/${encodeURIComponent(card.image_name)}${EXT}" alt="" loading="lazy">
+    <img class="icon job" src="${base}job_icon/${card.job}${EXT}" alt="" title="${data.job_labels?.[card.job] || ""}" loading="lazy">
+    ${card.element ? `<img class="icon elem" src="${base}element/${card.element}${EXT}" alt="" title="${data.element_labels?.[card.element] || ""}" loading="lazy">` : ""}
+    <div class="cname">${escapeHtml(card.name)}</div>
+    ${stats}
+  </div>`;
 }
 
 // 상대 이름은 디스코드 표시 이름이라 무엇이든 들어올 수 있다 — 반드시 이스케이프해서 넣는다
@@ -412,22 +441,12 @@ function render() {
     const el = document.createElement("div");
     el.className = "card" + (isSelected ? " selected" : "");
 
-    const statsHtml = data.stat_order.map(key => {
-      const gained = card.bonus[key];
-      return `<span class="stat" title="${data.stat_labels[key]}">
-                <img src="${data.image_base_url}stat_icon/${key}${EXT}" alt="">
-                ${card.stats[key]}${gained ? `<span class="plus">(+${gained})</span>` : ""}
-              </span>`;
-    }).join("");
-
     el.innerHTML = `
-      ${cardArt(card)}
-      <span class="grade" style="background: var(${GRADE_COLOR[card.grade] || "--R"})">${card.grade}</span>
+      ${cardArt(card, card.bonus)}
       ${alsoIn.length ? `<span class="alsomsg">${msg("web_in_other_deck", { number: alsoIn.join(", ") })}</span>` : ""}
       <span class="pick">${selected.indexOf(card.hero_id) + 1}</span>
       <div class="info">
-        <div class="name">${card.name}</div>
-        <div class="stats">${statsHtml}</div>
+        <div class="name">${escapeHtml(card.name)}</div>
         ${card.enhance_count > 0
           ? `<button type="button" class="reset-btn">${data.messages.web_reset_enhance}</button>` : ""}
       </div>`;
