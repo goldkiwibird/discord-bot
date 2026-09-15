@@ -45,7 +45,8 @@
   /* ── 이름표 ─────────────────────────────── */
   .nameplate { display: flex; flex-direction: column; gap: 6px; }
   .rail.them .nameplate { align-items: flex-end; }
-  .nameplate .who { font-size: 15px; font-weight: 700; white-space: nowrap; }
+  /* 닉네임은 화면 구석에서도 바로 읽혀야 해서 크게 잡는다 (좁은 화면에서는 줄어든다) */
+  .nameplate .who { font-size: clamp(20px, 2.4vw, 30px); font-weight: 700; white-space: nowrap; }
   .nameplate.them .who { color: var(--them); }
   .nameplate.me .who { color: var(--me); }
   .pips { display: flex; gap: 4px; }
