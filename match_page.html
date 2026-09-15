@@ -34,17 +34,17 @@
      VS와 내민 카드가 **보드 정중앙**을 기준으로 놓여야 하기 때문. */
   .board { position: relative; height: 100%; min-height: 0; padding: 10px 14px; overflow: hidden; }
 
-  /* 아래 한 줄: 왼쪽 끝에 내 이름 + 오른쪽으로 내 카드, 오른쪽 끝에 상대 이름 + 왼쪽으로 상대 카드 */
-  .rail { position: absolute; left: 14px; right: 14px; bottom: 10px;
-          display: flex; align-items: flex-end; gap: 16px; }
-  /* 양쪽이 폭을 반씩 나눠 갖고, 남는 만큼 카드가 줄어든다. 카드 폭을 vw로 잡았더니
-     패널을 뺀 폭이 아니라 화면 폭을 기준으로 계산돼 이름이 잘려나갔다. */
-  .side { display: flex; align-items: flex-end; gap: 10px; flex: 1 1 0; min-width: 0; }
-  .side.them { justify-content: flex-end; }
+  /* 손패는 마주 보는 두 줄이다.
+     상대: **우측 상단 끝에 이름**, 거기서 왼쪽으로 카드.
+     나:  **좌측 하단 끝에 이름**, 거기서 오른쪽으로 카드. */
+  .rail { position: absolute; left: 14px; right: 14px; display: flex; gap: 10px; }
+  .rail.them { top: 10px; justify-content: flex-end; align-items: flex-start; }
+  .rail.me { bottom: 10px; justify-content: flex-start; align-items: flex-end; }
   .nameplate { flex: none; }
 
   /* ── 이름표 ─────────────────────────────── */
   .nameplate { display: flex; flex-direction: column; gap: 6px; }
+  .rail.them .nameplate { align-items: flex-end; }
   .nameplate .who { font-size: 15px; font-weight: 700; white-space: nowrap; }
   .nameplate.them .who { color: var(--them); }
   .nameplate.me .who { color: var(--me); }
@@ -58,9 +58,8 @@
 
   /* ── 손패 ───────────────────────────────── */
   /* 양쪽 5장이 한 줄에 같이 놓이므로 카드 폭은 화면에 맞춰 줄어든다 (10장 + 이름 두 개) */
-  .hand { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; }
-  .hand.me { justify-content: flex-start; }
-  .hand.them { flex-direction: row-reverse; justify-content: flex-start; }  /* 이름(오른쪽 끝)에서 왼쪽으로 */
+  .hand { display: flex; gap: 6px; min-width: 0; }
+  .hand.them { flex-direction: row-reverse; }   /* 이름(오른쪽 끝)에서 왼쪽으로 쌓인다 */
   /* 카드 = 등급 프레임 + 일러스트 + 상단 직업/속성 아이콘 + 하단 능력치.
      좌표는 전부 512x768 프레임 대비 비율이라 카드 크기를 바꿔도 정렬이 유지된다
      (card_renderer.py의 portrait_box / job_icon_center / stat_panel에서 그대로 뽑았다).
@@ -68,7 +67,9 @@
      일러스트를 올려야 한다 — 순서를 바꾸면 그림이 가려진다.
      등급은 프레임 색이 말해주므로 따로 배지를 달지 않는다. */
   .card { width: 140px; flex: none; position: relative; transition: transform .18s, filter .18s; }
-  .hand .card { flex: 1 1 0; width: auto; min-width: 0; max-width: 112px; }
+  /* 한 줄에 5장씩이라 예전(10장 한 줄)보다 크게 잡을 수 있다. 화면 폭에 비례시켜서
+     좁은 화면에서도 이름표까지 한 줄에 들어가게 한다. */
+  .hand .card { width: clamp(52px, 9vw, 120px); flex: none; }
   .hand.me .card.pickable { cursor: pointer; }
   /* hover에 drop-shadow를 쓰면 알파 모양을 따라 블러를 계산하느라 매번 새 레이어가 생긴다.
      카드는 프레임 PNG라 box-shadow는 사각형으로 어긋나므로, 블러가 없는 밝기 필터로 대신한다. */
@@ -281,15 +282,13 @@
 <div id="app">
   <div class="board" id="board">
     <div class="stage" id="stage"><div class="hint" id="hint"></div></div>
-    <div class="rail">
-      <div class="side me">
-        <div class="nameplate me"><span class="who" id="myName">—</span><span class="pips" id="myPips"></span></div>
-        <div class="hand me" id="myHand"></div>
-      </div>
-      <div class="side them">
-        <div class="hand them" id="themHand"></div>
-        <div class="nameplate them"><span class="who" id="themName">—</span><span class="pips" id="themPips"></span></div>
-      </div>
+    <div class="rail them">
+      <div class="hand them" id="themHand"></div>
+      <div class="nameplate them"><span class="who" id="themName">—</span><span class="pips" id="themPips"></span></div>
+    </div>
+    <div class="rail me">
+      <div class="nameplate me"><span class="who" id="myName">—</span><span class="pips" id="myPips"></span></div>
+      <div class="hand me" id="myHand"></div>
     </div>
   </div>
   <aside class="panel">
