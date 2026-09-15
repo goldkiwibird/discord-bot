@@ -17,18 +17,6 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from card_renderer import CardData, CardRenderer, to_png_bytes
-
-
-def png_bytes(image):
-    """설정된 압축 강도로 PNG를 만든다 (card_config.png_compress_level, 기본 1).
-
-    0.1 CPU인 Render 무료 인스턴스에서는 PNG 압축이 렌더 자체보다 훨씬 비싸서,
-    이 값 하나로 소환/PVP 응답 속도가 몇 배씩 달라진다. 용량과 속도를 맞바꾸는 손잡이라
-    설정으로 빼 둔다 (0=무압축·가장 빠름 … 9=최대압축·가장 느림).
-    """
-    return to_png_bytes(image, config["card_config"].get("png_compress_level", 1))
-
 # 윈도우 콘솔 기본 인코딩(cp949)이 이모지 등 일부 유니코드 문자를 못 그려서 print()가 죽는 걸 방지
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -48,21 +36,6 @@ def load_config() -> dict:
 # 슬래시 명령어 데코레이터가 모듈 로드 시점에 바로 실행되기 때문에,
 # on_ready가 아니라 여기서 동기적으로 한 번 읽어들인다.
 config = load_config()
-
-# 동시에 돌아가는 이미지 합성 개수 상한. Render 무료 인스턴스는 **0.1 CPU**라 여러 개를 동시에
-# 돌려도 총 처리량이 늘지 않는다(CPU가 이미 한계). 반면 동시에 돌린 만큼 큰 이미지 버퍼가 겹쳐서
-# **메모리만 선형으로 늘어난다** — 실측으로 10연 소환 1건당 약 13MB가 더 잡히고, asyncio.to_thread의
-# 기본 스레드 수는 24개라 상한이 없으면 순간적으로 300MB가 더 붙어 512MB 한도를 넘길 수 있다.
-# 그래서 개수를 묶는다. 총 대기시간은 어차피 CPU가 정하므로 느려지지 않고, 오히려 먼저 온 요청이
-# 먼저 끝나서 평균 대기는 짧아진다. 1이 아니라 2인 이유: 에셋을 버킷에서 받느라 네트워크에서
-# 멈춘 렌더 하나가 나머지를 전부 막지 않게 하기 위함(콜드 캐시일 때 최대 10초까지 기다린다).
-render_semaphore = asyncio.Semaphore(config["card_config"].get("max_concurrent_renders", 2))
-
-
-async def render_in_thread(fn, *args):
-    """이미지 합성을 별도 스레드에서 돌리되, 동시 실행 개수를 render_semaphore로 제한한다."""
-    async with render_semaphore:
-        return await asyncio.to_thread(fn, *args)
 
 def today_kst() -> date:
     return datetime.now(KST).date()
@@ -99,19 +72,6 @@ def get_msg(locale_value: str, key: str, **kwargs) -> str:
     lang_messages = messages.get(locale_value, fallback)
     template = lang_messages.get(key) or fallback.get(key, "")
     return template.format(**kwargs) if kwargs else template
-
-# 명령어 이름/설명을 언어별로 다르게 보여주기 위한 번역 테이블을 오락실.json의 commands 섹션에서 구성.
-# 키는 (기본 한국어 문자열, discord.Locale), 값은 그 로케일에서 보여줄 번역문.
-COMMAND_TRANSLATIONS = {}
-for _base_name, _cmd_conf in config.get("commands", {}).items():
-    for _locale_value, _translated_name in _cmd_conf.get("name_localizations", {}).items():
-        COMMAND_TRANSLATIONS[(_base_name, discord.Locale(_locale_value))] = _translated_name
-    for _locale_value, _translated_desc in _cmd_conf.get("description_localizations", {}).items():
-        COMMAND_TRANSLATIONS[(_cmd_conf["description"], discord.Locale(_locale_value))] = _translated_desc
-
-class CommandTranslator(app_commands.Translator):
-    async def translate(self, string: app_commands.locale_str, locale: discord.Locale, context: app_commands.TranslationContext) -> str | None:
-        return COMMAND_TRANSLATIONS.get((string.message, locale))
 
 async def ensure_schema(conn):
     """봇이 직접 관리하는 테이블을 만든다.
@@ -215,7 +175,6 @@ class ArcadeBot(commands.Bot):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.pool: asyncpg.Pool | None = None
-        self.renderer = CardRenderer(config["card_config"])
         # 54종 고정 데이터라 시작할 때 한 번만 읽어서 등급별로 묶어둔다 (소환할 때마다 조회하지 않음)
         self.heroes_by_grade: dict[str, list[dict]] = {}
 
@@ -233,16 +192,17 @@ class ArcadeBot(commands.Bot):
                 print(f"↩️ 중단됐던 매치 {refunded}건의 판돈을 반환했습니다.")
 
         await start_web_server()
-        await self.tree.set_translator(CommandTranslator())
 
+        # 기능은 전부 채널 패널 버튼으로 옮겼고 슬래시 명령은 하나도 등록하지 않는다.
+        # 그래도 sync는 해야 한다 — **빈 트리를 동기화해야 예전에 등록됐던 /출석 같은 명령이
+        # 디스코드에서 사라진다.** 안 하면 목록에 남아 있다가 눌러도 응답이 없다.
         dev_guild_id = os.getenv("DEV_GUILD_ID")
         if dev_guild_id:
-            # 테스트 서버 하나에만 즉시 동기화 (개발 중엔 이쪽이 훨씬 빠름)
             guild = discord.Object(id=int(dev_guild_id))
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
         else:
-            # 길드 단위가 아닌 전역 동기화라 디스코드 클라이언트에 반영되는 데 최대 1시간 정도 걸릴 수 있음
+            # 전역 동기화는 디스코드 클라이언트에 반영되는 데 최대 1시간 정도 걸릴 수 있음
             await self.tree.sync()
 
     async def load_heroes(self, conn):
@@ -271,42 +231,66 @@ bot = ArcadeBot()
 async def on_ready():
     print(f"✅ 오락실 봇 로그인 완료: {bot.user}")
 
+    # on_ready는 재연결마다 다시 불릴 수 있으므로 한 번만 해야 하는 일은 가드로 막는다.
+    # (패널 재게시는 매번 해도 무해하지만, View 등록은 중복되면 쌓인다.)
+    global panel_views_registered
+    if not panel_views_registered:
+        panel_views_registered = True
+        for conf in config.get("panel_config", {}).get("categories", {}).values():
+            bot.add_view(ArcadePanelView(conf["lang"]))
+
+    posted = 0
+    for guild in bot.guilds:
+        posted += await setup_arcade_panel(guild)
+    print(f"🕹️ 오락실 패널 {posted}곳에 게시")
+
+
+panel_views_registered = False
+
 # 출석 SQL. 테스트(test_오락실.py)가 이 상수를 그대로 import해서 검증하므로, 문구를 복사해
 # 옮겨 적지 말 것 — 복사본을 두면 운영 쿼리만 바뀌었을 때 테스트가 눈치채지 못한다.
-# 인자: $1 user_id, $2 기존 유저 보상, $3 오늘, $4 어제, $5 신규 유저 보상.
+# 인자: $1 user_id, $2 기본 보상, $3 오늘, $4 어제, $5 신규 유저 보상,
+#       $6 연속 하루당 보너스, $7 보너스 상한.
 # `xmax = 0`은 ON CONFLICT를 안 타고 INSERT된 행, 즉 DB에 없던 신규 유저라는 뜻이다.
+#
+# 연속 보너스는 **갱신된 연속일수 - 1**에 비례한다(1일차 0원, 2일차 +20 … 6일차부터 상한 100).
+# SET 절에서는 새 값을 아직 모르므로 "이어지면 기존 streak, 끊기면 0"으로 같은 값을 만든다
+# (이어질 때 새 streak = 기존 + 1 이므로 기존 streak = 새 streak - 1).
+# RETURNING 절의 checkin_streak은 이미 갱신된 값이라 INSERT 분기(=1, 보너스 0)에도 그대로 맞는다.
 CHECKIN_SQL = """
     INSERT INTO users (user_id, points, last_checkin_date, checkin_streak)
     VALUES ($1, $5, $3, 1)
     ON CONFLICT (user_id) DO UPDATE SET
-        points = users.points + $2,
+        points = users.points + $2 + LEAST(
+            $6 * CASE WHEN users.last_checkin_date = $4 THEN users.checkin_streak ELSE 0 END, $7),
         last_checkin_date = EXCLUDED.last_checkin_date,
         checkin_streak = CASE
             WHEN users.last_checkin_date = $4 THEN users.checkin_streak + 1
             ELSE 1
         END
     WHERE users.last_checkin_date IS DISTINCT FROM EXCLUDED.last_checkin_date
-    RETURNING points, checkin_streak, (xmax = 0) AS is_first_time
+    RETURNING points, checkin_streak, (xmax = 0) AS is_first_time,
+              LEAST($6 * GREATEST(checkin_streak - 1, 0), $7) AS streak_bonus
 """
 
-@bot.tree.command(
-    name=app_commands.locale_str("check-in"),
-    description=app_commands.locale_str(config["commands"]["check-in"]["description"]),
-)
-async def checkin(interaction: discord.Interaction):
+async def do_checkin(interaction: discord.Interaction):
+    """출석 처리. 패널 버튼에서 호출한다."""
     await interaction.response.defer(ephemeral=True)
 
     lang = resolve_lang(interaction)
     checkin_conf = config.get("checkin_config", {})
     daily_points = checkin_conf.get("daily_points", 100)
     first_time_points = checkin_conf.get("first_time_points", daily_points)
+    bonus_per_day = checkin_conf.get("streak_bonus_per_day", 0)
+    max_bonus = checkin_conf.get("max_streak_bonus", 0)
     today = today_kst()
     yesterday = today - timedelta(days=1)
 
     try:
         async with bot.pool.acquire() as conn:
             row = await conn.fetchrow(CHECKIN_SQL, interaction.user.id, daily_points,
-                                      today, yesterday, first_time_points)
+                                      today, yesterday, first_time_points,
+                                      bonus_per_day, max_bonus)
     except Exception as e:
         print(f"⚠️ 출석 처리 중 DB 오류: {e}")
         await interaction.followup.send(get_msg(lang, "checkin_error"), ephemeral=True)
@@ -318,23 +302,29 @@ async def checkin(interaction: discord.Interaction):
 
     # `xmax = 0`이면 ON CONFLICT를 안 타고 새 행이 들어갔다는 뜻 = DB에 없던 신규 유저.
     # (users 행을 만드는 곳은 이 출석 명령 하나뿐이라 "첫 출석"과 같은 의미다.)
-    earned = first_time_points if row["is_first_time"] else daily_points
+    bonus = row["streak_bonus"]
+    if row["is_first_time"]:
+        # 첫 출석은 신규 보상만 준다 (1일차라 연속 보너스는 어차피 0이다)
+        description = get_msg(lang, "checkin_first_time_desc", points=f"{first_time_points:,}")
+    elif bonus:
+        # 기본 보상과 연속 보너스를 나눠서 보여준다 (예: 200P = 100P + 보너스 100P)
+        description = get_msg(lang, "checkin_success_bonus_desc",
+                              total=f"{daily_points + bonus:,}",
+                              base=f"{daily_points:,}", bonus=f"{bonus:,}")
+    else:
+        description = get_msg(lang, "checkin_success_desc", total=f"{daily_points:,}")
+
     embed = discord.Embed(
         title=get_msg(lang, "checkin_success_title"),
-        description=get_msg(lang,
-                            "checkin_first_time_desc" if row["is_first_time"] else "checkin_success_desc",
-                            points=f"{earned:,}"),
+        description=description,
         color=discord.Color.green()
     )
     embed.add_field(name=get_msg(lang, "checkin_points_label"), value=f"{row['points']:,}P", inline=True)
     embed.add_field(name=get_msg(lang, "checkin_streak_label"), value=get_msg(lang, "checkin_streak_value", streak=row['checkin_streak']), inline=True)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(
-    name=app_commands.locale_str("points"),
-    description=app_commands.locale_str(config["commands"]["points"]["description"]),
-)
-async def check_points(interaction: discord.Interaction):
+async def do_points(interaction: discord.Interaction):
+    """보유 포인트 조회. 패널 버튼에서 호출한다."""
     await interaction.response.defer(ephemeral=True)
 
     lang = resolve_lang(interaction)
@@ -473,29 +463,6 @@ async def run_summon(user_id: int, count: int, cost: int) -> tuple[list[dict] | 
                 )
 
     return outcomes, owned, points
-
-def build_cards(outcomes: list[dict], lang: str) -> list[CardData]:
-    """소환 결과를 카드 이미지용 데이터로 변환.
-
-    소환 화면에서는 항상 직업/종족 기본 스탯만 보여준다 (강화 반영 X).
-    강화가 반영된 "현재 보유 스탯"은 나중에 PVP 등에서 CardData.bonus를 채워 표시한다
-    (card_renderer는 이미 그 경우 "10 (+3)" 형식으로 그릴 수 있음).
-
-    name(자산 조회 키, hero-cards/hero/*.png 파일명)은 항상 한글 원본 그대로 두고,
-    화면에 그려질 display_name만 명령어를 실행한 채널 언어에 맞춰 바꾼다.
-    """
-    return [
-        CardData(
-            hero_id=outcome["hero"]["id"],
-            name=outcome["hero"]["name"],
-            display_name=hero_display_name(outcome["hero"], lang),
-            grade=outcome["hero"]["grade"],
-            job=outcome["hero"]["job"],
-            element=outcome["hero"]["element"],
-            stats={key: outcome["hero"][key] for key in STAT_KEYS},
-        )
-        for outcome in outcomes
-    ]
 
 def describe_outcomes(outcomes: list[dict], lang: str) -> str:
     lines = []
@@ -1013,20 +980,6 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
     # 소환 결과는 DM이 아니라 명령어를 실행한 채널에 본인에게만 보이는(ephemeral) 메시지로 전달
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-@bot.tree.command(
-    name=app_commands.locale_str("summon"),
-    description=app_commands.locale_str(config["commands"]["summon"]["description"]),
-)
-async def summon(interaction: discord.Interaction):
-    await summon_and_reply(interaction, 1, config["summon_config"]["cost_single"])
-
-@bot.tree.command(
-    name=app_commands.locale_str("summon-10"),
-    description=app_commands.locale_str(config["commands"]["summon-10"]["description"]),
-)
-async def summon_ten(interaction: discord.Interaction):
-    summon_conf = config["summon_config"]
-    await summon_and_reply(interaction, summon_conf["multi_count"], summon_conf["cost_multi"])
 
 # --- 덱 편성 웹페이지 -------------------------------------------------------
 
@@ -1452,11 +1405,8 @@ def web_base_url() -> str:
             or os.getenv("RENDER_EXTERNAL_URL")
             or f"http://localhost:{os.environ.get('PORT', 10000)}").rstrip("/")
 
-@bot.tree.command(
-    name=app_commands.locale_str("deck"),
-    description=app_commands.locale_str(config["commands"]["deck"]["description"]),
-)
-async def deck(interaction: discord.Interaction):
+async def do_deck(interaction: discord.Interaction):
+    """덱 편성 웹페이지 링크 발급. 패널 버튼에서 호출한다."""
     await interaction.response.defer(ephemeral=True)
     lang = resolve_lang(interaction)
 
@@ -1653,17 +1603,6 @@ def web_card(card: dict) -> dict:
         "stats": {key: card[key] for key in STAT_KEYS},
     }
 
-def to_card_data(card: dict) -> CardData:
-    """fetch_battle_decks()가 내려주는 카드 dict를 카드 렌더러 입력으로 변환.
-
-    보유 카드 화면이므로 강화가 반영된 현재 스탯 + 증가분을 그대로 넘긴다("10 (+3)" 표기).
-    """
-    return CardData(
-        hero_id=card["hero_id"], name=card["name"], grade=card["grade"], job=card["job"],
-        element=card["element"],
-        stats={key: card[key] for key in STAT_KEYS}, bonus=card["bonus"], display_name=card["display_name"],
-    )
-
 def timer_line(lang: str, seconds: int) -> str:
     """남은 제한 시간을 디스코드 상대 타임스탬프(`<t:...:R>`)로 표시하는 한 줄.
 
@@ -1788,6 +1727,11 @@ async def resolve_round(match: PvpMatch) -> None:
     match.disarm()          # 이번 라운드 타이머 종료
     await match.broadcast()   # 판정 결과를 웹 화면에 먼저 띄운다
 
+    # 판정 연출을 볼 시간을 준다. 이게 없으면 마지막 두 판이 붙어서 지나간다 —
+    # 4라운드가 끝나면 남은 카드가 1장뿐이라 5라운드가 자동으로 즉시 진행되고,
+    # 그 결과와 최종 승패까지 한꺼번에 튀어나와 무슨 일이 일어났는지 볼 수가 없다.
+    await asyncio.sleep(config["pvp_config"].get("round_reveal_pause_seconds", 2))
+
     if a.remaining:
         await start_round(match)
     else:
@@ -1871,6 +1815,13 @@ class MatchInviteView(discord.ui.View):
                     url=f"{base}/match?id={self.match_id}"))
             except discord.HTTPException:
                 pass
+
+        # 수락한 뒤에는 도전장이 할 일이 없다(버튼도 죽었고 진행은 웹에서 한다).
+        # 그대로 두면 DM에 쓸모없는 메시지가 쌓이므로 지운다 — 링크는 바로 위에서 따로 보냈다.
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
 
         # 덱 선택도 웹에서 한다. 제한 시간 안에 양쪽이 다 고르지 않으면 매치를 취소하고
         # 판돈을 돌려준다 (예전에는 DeckPickView의 timeout이 이 역할을 했다).
@@ -1978,21 +1929,142 @@ async def start_match(interaction: discord.Interaction, opponent: discord.Member
         get_msg(lang, "match_sent_public" if public else "match_sent",
                 opponent=opponent.display_name), ephemeral=True)
 
-@bot.tree.command(
-    name=app_commands.locale_str("match"),
-    description=app_commands.locale_str(config["commands"]["match"]["description"]),
-)
-async def match(interaction: discord.Interaction, opponent: discord.Member, wager: int,
-                public: bool = False):
-    await start_match(interaction, opponent, wager, public)
 
-@bot.tree.command(
-    name=app_commands.locale_str("friendly"),
-    description=app_commands.locale_str(config["commands"]["friendly"]["description"]),
-)
-async def friendly(interaction: discord.Interaction, opponent: discord.Member,
-                   public: bool = False):
-    await start_match(interaction, opponent, None, public)
+# ---------------------------------------------------------------------------
+# 오락실 패널 — 슬래시 명령 대신 채널에 고정된 버튼 메시지로 모든 기능을 연다.
+# 통합관리봇의 음성채널 생성 패널과 같은 방식: 봇이 켜질 때 기존 메시지를 지우고 새로 올린다.
+# ---------------------------------------------------------------------------
+
+class ArcadePanelView(discord.ui.View):
+    """채널에 상주하는 기능 버튼 모음.
+
+    `timeout=None` + 버튼마다 고정 `custom_id`라 봇이 재시작해도 눌리는 영구 View다.
+    재시작 때 메시지를 새로 올리긴 하지만, 지우기에 실패해 옛 메시지가 남아도
+    `bot.add_view()`로 등록해두면 그 버튼도 계속 동작한다.
+    """
+
+    def __init__(self, lang: str):
+        super().__init__(timeout=None)
+        self.lang = lang
+        for key, style, handler in (
+            ("panel_checkin", discord.ButtonStyle.success, self.on_checkin),
+            ("panel_summon", discord.ButtonStyle.primary, self.on_summon),
+            ("panel_summon_multi", discord.ButtonStyle.primary, self.on_summon_multi),
+            ("panel_deck", discord.ButtonStyle.secondary, self.on_deck),
+            ("panel_match", discord.ButtonStyle.danger, self.on_match),
+            ("panel_points", discord.ButtonStyle.secondary, self.on_points),
+        ):
+            label = get_msg(lang, key, count=config["summon_config"]["multi_count"])                 if key == "panel_summon_multi" else get_msg(lang, key)
+            button = discord.ui.Button(label=label, style=style,
+                                       custom_id=f"arcade_{key}_{lang}")
+            button.callback = handler
+            self.add_item(button)
+
+    async def on_checkin(self, interaction: discord.Interaction):
+        await do_checkin(interaction)
+
+    async def on_points(self, interaction: discord.Interaction):
+        await do_points(interaction)
+
+    async def on_deck(self, interaction: discord.Interaction):
+        await do_deck(interaction)
+
+    async def on_summon(self, interaction: discord.Interaction):
+        conf = config["summon_config"]
+        await summon_and_reply(interaction, 1, conf["cost_single"])
+
+    async def on_summon_multi(self, interaction: discord.Interaction):
+        conf = config["summon_config"]
+        await summon_and_reply(interaction, conf["multi_count"], conf["cost_multi"])
+
+    async def on_match(self, interaction: discord.Interaction):
+        # 상대를 고르는 화면을 먼저 띄운다. 판돈은 상대를 고른 뒤 모달로 받는다 —
+        # 모달은 인터랙션의 **첫 응답**으로만 열 수 있어서 버튼 -> 모달 -> 상대선택 순서가 불가능하다.
+        lang = resolve_lang(interaction)
+        await interaction.response.send_message(
+            get_msg(lang, "panel_match_pick_opponent"),
+            view=MatchOpponentView(lang), ephemeral=True)
+
+
+class MatchOpponentView(discord.ui.View):
+    """대결 상대를 고르는 ephemeral 화면 (고른 뒤 판돈 모달이 열린다)."""
+
+    def __init__(self, lang: str):
+        super().__init__(timeout=120)
+        self.lang = lang
+        select = discord.ui.UserSelect(placeholder=get_msg(lang, "panel_match_pick_opponent"),
+                                       min_values=1, max_values=1)
+        select.callback = self.on_pick
+        self.add_item(select)
+
+    async def on_pick(self, interaction: discord.Interaction):
+        opponent = interaction.data["resolved"]["users"]
+        opponent_id = int(next(iter(opponent)))
+        member = interaction.guild.get_member(opponent_id) if interaction.guild else None
+        if member is None:
+            return await interaction.response.send_message(
+                get_msg(self.lang, "match_err_generic"), ephemeral=True)
+        # 상대 선택은 새 인터랙션이라 여기서 모달을 여는 건 첫 응답 -> 허용된다
+        await interaction.response.send_modal(MatchWagerModal(self.lang, member))
+
+
+class MatchWagerModal(discord.ui.Modal):
+    """판돈 입력. 0을 넣으면 친선전(포인트 이동 없음)이 된다."""
+
+    def __init__(self, lang: str, opponent: discord.Member):
+        super().__init__(title=get_msg(lang, "panel_match_modal_title"))
+        self.lang, self.opponent = lang, opponent
+        self.wager = discord.ui.TextInput(
+            label=get_msg(lang, "panel_match_wager_label"),
+            placeholder=get_msg(lang, "panel_match_wager_hint"),
+            default="0", required=True, max_length=9)
+        self.add_item(self.wager)
+        self.public = discord.ui.TextInput(
+            label=get_msg(lang, "panel_match_public_label"),
+            placeholder=get_msg(lang, "panel_match_public_hint"),
+            default="N", required=False, max_length=4)
+        self.add_item(self.public)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.wager.value.strip().replace(",", "")
+        if not raw.isdigit():
+            return await interaction.response.send_message(
+                get_msg(self.lang, "panel_match_wager_invalid"), ephemeral=True)
+        wager = int(raw)
+        public = self.public.value.strip().upper() in ("Y", "YES", "O", "공개", "T", "TRUE")
+        # 판돈 0은 친선전과 같은 뜻이다 — start_match는 None을 친선전으로 보므로 변환해서 넘긴다
+        await start_match(interaction, self.opponent, wager or None, public)
+
+
+async def setup_arcade_panel(guild: discord.Guild) -> int:
+    """설정에 적힌 카테고리/채널마다 기능 버튼 메시지를 새로 올린다.
+
+    봇이 켜질 때마다 기존 봇 메시지를 지우고 다시 올려서, 패널이 항상 채널 맨 아래에 오고
+    버튼 문구나 구성이 바뀌어도 자동으로 반영된다 (통합관리봇 음성채널 패널과 같은 방식).
+    """
+    posted = 0
+    for category_name, conf in config.get("panel_config", {}).get("categories", {}).items():
+        category = discord.utils.get(guild.categories, name=category_name)
+        if category is None:
+            continue
+        channel = discord.utils.get(category.text_channels, name=conf["channel"])
+        if channel is None:
+            continue
+
+        lang = conf["lang"]
+        try:
+            async for message in channel.history(limit=30):
+                if message.author == bot.user:
+                    await message.delete()
+            embed = discord.Embed(title=get_msg(lang, "panel_title"),
+                                  description=get_msg(lang, "panel_desc"),
+                                  color=discord.Color.blurple())
+            await channel.send(embed=embed, view=ArcadePanelView(lang))
+            posted += 1
+        except discord.HTTPException as e:
+            print(f"⚠️ 오락실 패널 게시 실패 ({guild.name} / {channel.name}): {e}")
+    return posted
+
 
 def main():
     token = os.environ["BOT_TOKEN"]
