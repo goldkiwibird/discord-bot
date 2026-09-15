@@ -247,10 +247,9 @@
       "match_err_dm_self": "❌ I could not DM you. Please allow direct messages and try again.",
       "match_err_generic": "❌ An error occurred. Please try again later.",
       "match_err_not_yours": "This challenge isn't addressed to you.",
-      "match_sent_public": "Challenge posted in this channel.",
+      "match_sent_public": "⚔️ Your challenge was posted in {channel}.",
       "match_err_channel": "Can't post here. Use this command in a channel where I can send messages.",
       "match_link_player": "⚔️ Open the battle screen: {url}",
-      "match_link_spectate": "⚔️ **{challenger}** vs **{opponent}** — watch live: {url}",
       "match_invite_title": "⚔️ Battle Challenge",
       "match_invite_friendly": "**{challenger}** challenges you to a friendly match.",
       "match_invite_wager": "**{challenger}** challenges you for **{wager}P**.",
@@ -323,7 +322,19 @@
       "panel_match_wager_hint": "0",
       "panel_match_wager_invalid": "Enter the wager as a number (0 or higher).",
       "panel_match_public_label": "Post in this channel? (Y/N)",
-      "panel_match_public_hint": "N — send the challenge by DM only"
+      "panel_match_public_hint": "N — send the challenge by DM only",
+      "match_err_no_match_channel": "❌ Couldn't find the public match channel ({channel}) in this category. Try again without making it public.",
+      "match_public_players": "**{challenger}**  vs  **{opponent}**",
+      "match_public_wager": "💰 Wager: **{wager}P** — winner takes it all.",
+      "match_public_friendly": "🤝 Friendly match — no points at stake.",
+      "match_public_spectate": "👀 Watch live: {url}",
+      "match_public_live_title": "⚔️ Match in progress",
+      "match_public_ended_title": "🏁 Match ended",
+      "match_public_result_win": "🏆 **{winner}** wins ({a} : {b})",
+      "match_public_result_draw": "🤝 Draw — match voided ({a} : {b})",
+      "match_public_declined": "❌ The challenge was declined.",
+      "match_public_expired": "⌛ Nobody accepted in time — the challenge expired.",
+      "match_public_restarted": "⚠️ The bot restarted, so this match was stopped. Wagers have been refunded."
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -413,10 +424,9 @@
       "match_err_dm_self": "❌ 회원님에게 개인 메시지를 보낼 수 없습니다. DM 수신을 허용한 뒤 다시 시도해주세요.",
       "match_err_generic": "❌ 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
       "match_err_not_yours": "이 도전장은 당신에게 온 것이 아닙니다.",
-      "match_sent_public": "이 채널에 도전장을 공개했습니다.",
+      "match_sent_public": "⚔️ {channel} 채널에 도전장을 공개했습니다.",
       "match_err_channel": "이 채널에 글을 쓸 수 없습니다. 봇이 메시지를 보낼 수 있는 채널에서 실행해주세요.",
       "match_link_player": "⚔️ 대전 화면 열기: {url}",
-      "match_link_spectate": "⚔️ **{challenger}** vs **{opponent}** — 실시간 관전: {url}",
       "match_invite_title": "⚔️ 대결 신청",
       "match_invite_friendly": "**{challenger}**님이 친선전을 신청했습니다.",
       "match_invite_wager": "**{challenger}**님이 **{wager}P**를 걸고 승부를 걸어왔습니다.",
@@ -489,7 +499,19 @@
       "panel_match_wager_hint": "0",
       "panel_match_wager_invalid": "판돈은 0 이상의 숫자로 입력해주세요.",
       "panel_match_public_label": "이 채널에 공개할까요? (Y/N)",
-      "panel_match_public_hint": "N — 도전장을 DM으로만 보냄"
+      "panel_match_public_hint": "N — 도전장을 DM으로만 보냄",
+      "match_err_no_match_channel": "❌ 같은 카테고리에서 공개 매치 채널({channel})을 찾지 못했습니다. 비공개로 다시 시도해주세요.",
+      "match_public_players": "**{challenger}**  vs  **{opponent}**",
+      "match_public_wager": "💰 판돈 **{wager}P** — 이긴 쪽이 전부 가져갑니다.",
+      "match_public_friendly": "🤝 친선전 — 포인트 이동은 없습니다.",
+      "match_public_spectate": "👀 실시간 관전: {url}",
+      "match_public_live_title": "⚔️ 대결 진행 중",
+      "match_public_ended_title": "🏁 대결 종료",
+      "match_public_result_win": "🏆 **{winner}** 승리 ({a} : {b})",
+      "match_public_result_draw": "🤝 무승부 — 매치 무효 ({a} : {b})",
+      "match_public_declined": "❌ 상대가 도전을 거부했습니다.",
+      "match_public_expired": "⌛ 시간 안에 수락되지 않아 무산되었습니다.",
+      "match_public_restarted": "⚠️ 봇이 재시작되어 이 매치는 중단되었습니다. 판돈은 반환되었습니다."
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -579,10 +601,9 @@
       "match_err_dm_self": "❌ 無法私訊您，請開放私訊後再試一次。",
       "match_err_generic": "❌ 發生錯誤，請稍後再試。",
       "match_err_not_yours": "這封戰帖不是給你的。",
-      "match_sent_public": "已在此頻道公開戰帖。",
+      "match_sent_public": "⚔️ 已在 {channel} 頻道公開戰帖。",
       "match_err_channel": "無法在此頻道發言。請在機器人可發送訊息的頻道執行。",
       "match_link_player": "⚔️ 開啟對戰畫面：{url}",
-      "match_link_spectate": "⚔️ **{challenger}** vs **{opponent}** — 即時觀戰：{url}",
       "match_invite_title": "⚔️ 對戰邀請",
       "match_invite_friendly": "**{challenger}** 向您發起友誼賽。",
       "match_invite_wager": "**{challenger}** 賭上 **{wager}P** 向您發起挑戰。",
@@ -655,18 +676,32 @@
       "panel_match_wager_hint": "0",
       "panel_match_wager_invalid": "賭注請輸入 0 以上的數字。",
       "panel_match_public_label": "要公開在此頻道嗎？(Y/N)",
-      "panel_match_public_hint": "N — 只以私訊發送戰帖"
+      "panel_match_public_hint": "N — 只以私訊發送戰帖",
+      "match_err_no_match_channel": "❌ 在同一分類中找不到公開對戰頻道（{channel}）。請改用不公開的方式再試一次。",
+      "match_public_players": "**{challenger}**  vs  **{opponent}**",
+      "match_public_wager": "💰 賭注 **{wager}P** — 贏家全拿。",
+      "match_public_friendly": "🤝 友誼賽 — 不會有點數變動。",
+      "match_public_spectate": "👀 即時觀戰：{url}",
+      "match_public_live_title": "⚔️ 對戰進行中",
+      "match_public_ended_title": "🏁 對戰結束",
+      "match_public_result_win": "🏆 **{winner}** 獲勝（{a} : {b}）",
+      "match_public_result_draw": "🤝 平手 — 本場無效（{a} : {b}）",
+      "match_public_declined": "❌ 對方拒絕了戰帖。",
+      "match_public_expired": "⌛ 時間內未被接受，戰帖已失效。",
+      "match_public_restarted": "⚠️ 機器人重新啟動，本場對戰已中止。賭注已退還。"
     }
   },
   "panel_config": {
     "categories": {
       "――――――― 번체 채널": {
         "channel": "🕹️오락실",
-        "lang": "zh-TW"
+        "lang": "zh-TW",
+        "match_channel": "⚔️카드게임-공개매치"
       },
       "――――――― 영어 채널": {
         "channel": "🕹️오락실",
-        "lang": "en-US"
+        "lang": "en-US",
+        "match_channel": "⚔️카드게임-공개매치"
       }
     }
   }
