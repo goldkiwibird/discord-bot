@@ -1,7 +1,9 @@
 {
   "checkin_config": {
     "daily_points": 100,
-    "first_time_points": 1000
+    "first_time_points": 1000,
+    "streak_bonus_per_day": 20,
+    "max_streak_bonus": 100
   },
   "deck_config": {
     "deck_count": 3,
@@ -73,7 +75,8 @@
     },
     "round_pick_timeout_seconds": 15,
     "max_spectators": 50,
-    "stream_heartbeat_seconds": 15
+    "stream_heartbeat_seconds": 15,
+    "round_reveal_pause_seconds": 2
   },
   "web_config": {
     "base_url": "",
@@ -112,20 +115,8 @@
     }
   },
   "card_config": {
-    "assets_dir": "hero-cards",
     "image_base_url": "https://pub-15b11ac199e9427a82bc2aae35bafcc6.r2.dev/",
     "image_ext": ".webp",
-    "asset_fetch_timeout_seconds": 10,
-    "font_path": "",
-    "base_card_cache_size": 20,
-    "portrait_cache_size": 200,
-    "name_box": [
-      50,
-      44,
-      462,
-      79
-    ],
-    "name_font_size": 26,
     "portrait_box": [
       40,
       90,
@@ -143,7 +134,6 @@
       706
     ],
     "stat_icon_size": 34,
-    "stat_font_size": 26,
     "job_order": [
       "warrior",
       "archer",
@@ -166,107 +156,16 @@
       "defense",
       "accuracy",
       "evasion"
-    ],
-    "grid_columns": 5,
-    "grid_card_width": 300,
-    "deck_reveal_rows": [
-      2,
-      3
-    ],
-    "deck_reveal_card_width": 420,
-    "matchup_gap": 100,
-    "matchup_text_padding": 28,
-    "matchup_value_font_size": 44,
-    "png_compress_level": 1,
-    "max_concurrent_renders": 2
-  },
-  "commands": {
-    "check-in": {
-      "description": "Check in once a day to earn points.",
-      "name_localizations": {
-        "ko": "출석",
-        "zh-TW": "簽到"
-      },
-      "description_localizations": {
-        "ko": "하루 한 번 출석하고 포인트를 받습니다.",
-        "zh-TW": "每天簽到一次即可獲得點數。"
-      }
-    },
-    "points": {
-      "description": "Check your current point balance.",
-      "name_localizations": {
-        "ko": "포인트",
-        "zh-TW": "點數"
-      },
-      "description_localizations": {
-        "ko": "현재 보유 포인트를 확인합니다.",
-        "zh-TW": "查詢目前持有的點數。"
-      }
-    },
-    "summon": {
-      "description": "Spend points to summon one hero card.",
-      "name_localizations": {
-        "ko": "소환",
-        "zh-TW": "召喚"
-      },
-      "description_localizations": {
-        "ko": "포인트를 소모해 영웅 카드를 1회 소환합니다.",
-        "zh-TW": "消耗點數召喚一張英雄卡。"
-      }
-    },
-    "summon-10": {
-      "description": "Spend points to summon ten hero cards at once.",
-      "name_localizations": {
-        "ko": "10소환",
-        "zh-TW": "十連召喚"
-      },
-      "description_localizations": {
-        "ko": "포인트를 소모해 영웅 카드를 10회 소환합니다.",
-        "zh-TW": "消耗點數一次召喚十張英雄卡。"
-      }
-    },
-    "deck": {
-      "description": "Open the deck builder to arrange your cards.",
-      "name_localizations": {
-        "ko": "덱설정",
-        "zh-TW": "牌組設定"
-      },
-      "description_localizations": {
-        "ko": "보유 카드로 덱을 구성합니다.",
-        "zh-TW": "使用持有的卡片編組牌組。"
-      }
-    },
-    "match": {
-      "description": "Challenge another player to a card battle with points at stake.",
-      "name_localizations": {
-        "ko": "매치",
-        "zh-TW": "對戰"
-      },
-      "description_localizations": {
-        "ko": "다른 유저에게 판돈을 걸고 카드 대결을 신청합니다.",
-        "zh-TW": "向其他玩家發起賭上點數的卡片對戰。"
-      }
-    },
-    "friendly": {
-      "description": "Challenge another player to a card battle with no points at stake.",
-      "name_localizations": {
-        "ko": "친선전",
-        "zh-TW": "友誼賽"
-      },
-      "description_localizations": {
-        "ko": "다른 유저에게 판돈 없이 카드 대결을 신청합니다.",
-        "zh-TW": "向其他玩家發起不賭點數的卡片對戰。"
-      }
-    }
+    ]
   },
   "messages": {
     "en-US": {
       "checkin_success_title": "✅ Check-in complete",
-      "checkin_success_desc": "You received {points} points!",
+      "checkin_success_desc": "You received {total}P!",
       "checkin_first_time_desc": "🎉 Welcome! First check-in bonus: {points} points!",
       "checkin_points_label": "Current points",
       "checkin_streak_label": "Check-in streak",
-      "checkin_streak_value": "{streak} day(s)",
+      "checkin_streak_value": "Day {streak}",
       "checkin_already_done": "❌ You've already checked in today. Try again tomorrow.",
       "checkin_error": "❌ An error occurred. Please try again later.",
       "points_balance": "💰 Current points: **{points}P**",
@@ -408,15 +307,31 @@
       "web_reset_enhance": "Reset enhancement",
       "web_reset_enhance_confirm": "Reset this card's enhancement? All stat gains from enhancement will be lost.",
       "web_reset_enhance_done": "Enhancement reset.",
-      "web_reset_enhance_failed": "Failed to reset: {reason}"
+      "web_reset_enhance_failed": "Failed to reset: {reason}",
+      "checkin_success_bonus_desc": "You received **{total}P**!\n({base}P + streak bonus {bonus}P)",
+      "panel_title": "🕹️ Arcade",
+      "panel_desc": "Check in, summon heroes, build decks and battle — all from here.",
+      "panel_checkin": "📅 Check in",
+      "panel_summon": "🎴 Summon",
+      "panel_summon_multi": "🎴 Summon x{count}",
+      "panel_deck": "🛠️ Decks & History",
+      "panel_match": "⚔️ Battle",
+      "panel_points": "💰 Points",
+      "panel_match_pick_opponent": "Who do you want to fight?",
+      "panel_match_modal_title": "Set up the battle",
+      "panel_match_wager_label": "Wager (0 for a friendly match)",
+      "panel_match_wager_hint": "0",
+      "panel_match_wager_invalid": "Enter the wager as a number (0 or higher).",
+      "panel_match_public_label": "Post in this channel? (Y/N)",
+      "panel_match_public_hint": "N — send the challenge by DM only"
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
-      "checkin_success_desc": "{points}포인트를 받았습니다!",
+      "checkin_success_desc": "{total}P를 받았습니다!",
       "checkin_first_time_desc": "🎉 첫 출석을 환영합니다! 신규 보너스로 {points}포인트를 받았습니다!",
       "checkin_points_label": "현재 보유 포인트",
       "checkin_streak_label": "연속 출석",
-      "checkin_streak_value": "{streak}일째",
+      "checkin_streak_value": "{streak}일차",
       "checkin_already_done": "❌ 오늘은 이미 출석하셨습니다. 내일 다시 시도해주세요.",
       "checkin_error": "❌ 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
       "points_balance": "💰 현재 보유 포인트: **{points}P**",
@@ -558,11 +473,27 @@
       "web_reset_enhance": "강화 초기화",
       "web_reset_enhance_confirm": "이 카드의 강화를 초기화하시겠습니까? 강화로 얻은 스탯이 모두 사라집니다.",
       "web_reset_enhance_done": "강화가 초기화되었습니다.",
-      "web_reset_enhance_failed": "초기화 실패: {reason}"
+      "web_reset_enhance_failed": "초기화 실패: {reason}",
+      "checkin_success_bonus_desc": "**{total}P**를 받았습니다!\n({base}P + 연속 출석 보너스 {bonus}P)",
+      "panel_title": "🕹️ 오락실",
+      "panel_desc": "출석, 소환, 덱 편성, 대결까지 여기서 바로 할 수 있습니다.",
+      "panel_checkin": "📅 출석",
+      "panel_summon": "🎴 소환",
+      "panel_summon_multi": "🎴 {count}연 소환",
+      "panel_deck": "🛠️ 덱 · 이력",
+      "panel_match": "⚔️ 대결",
+      "panel_points": "💰 포인트",
+      "panel_match_pick_opponent": "누구와 대결할까요?",
+      "panel_match_modal_title": "대결 설정",
+      "panel_match_wager_label": "판돈 (0이면 친선전)",
+      "panel_match_wager_hint": "0",
+      "panel_match_wager_invalid": "판돈은 0 이상의 숫자로 입력해주세요.",
+      "panel_match_public_label": "이 채널에 공개할까요? (Y/N)",
+      "panel_match_public_hint": "N — 도전장을 DM으로만 보냄"
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
-      "checkin_success_desc": "獲得了 {points} 點數！",
+      "checkin_success_desc": "獲得了 {total} 點數！",
       "checkin_first_time_desc": "🎉 歡迎！首次簽到獎勵 {points} 點數！",
       "checkin_points_label": "目前持有點數",
       "checkin_streak_label": "連續簽到",
@@ -708,7 +639,35 @@
       "web_reset_enhance": "重置強化",
       "web_reset_enhance_confirm": "確定要重置此卡片的強化嗎？強化獲得的所有數值加成都會消失。",
       "web_reset_enhance_done": "強化已重置。",
-      "web_reset_enhance_failed": "重置失敗：{reason}"
+      "web_reset_enhance_failed": "重置失敗：{reason}",
+      "checkin_success_bonus_desc": "獲得了 **{total} 點數**！\n（{base}P + 連續簽到獎勵 {bonus}P）",
+      "panel_title": "🕹️ 遊樂場",
+      "panel_desc": "簽到、召喚、編組與對戰，都可以在這裡進行。",
+      "panel_checkin": "📅 簽到",
+      "panel_summon": "🎴 召喚",
+      "panel_summon_multi": "🎴 {count} 連召喚",
+      "panel_deck": "🛠️ 牌組 · 紀錄",
+      "panel_match": "⚔️ 對戰",
+      "panel_points": "💰 點數",
+      "panel_match_pick_opponent": "想和誰對戰？",
+      "panel_match_modal_title": "對戰設定",
+      "panel_match_wager_label": "賭注（0 為友誼賽）",
+      "panel_match_wager_hint": "0",
+      "panel_match_wager_invalid": "賭注請輸入 0 以上的數字。",
+      "panel_match_public_label": "要公開在此頻道嗎？(Y/N)",
+      "panel_match_public_hint": "N — 只以私訊發送戰帖"
+    }
+  },
+  "panel_config": {
+    "categories": {
+      "――――――― 번체 채널": {
+        "channel": "🕹️오락실",
+        "lang": "zh-TW"
+      },
+      "――――――― 영어 채널": {
+        "channel": "🕹️오락실",
+        "lang": "en-US"
+      }
     }
   }
 }
