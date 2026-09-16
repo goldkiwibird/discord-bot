@@ -414,7 +414,8 @@
       "web_match_rematch": "Play again",
       "web_match_scoreline": "{them}  {a} : {b}  {me}",
       "web_room_closed_idle": "No match started for 10 minutes, so the room closed.",
-      "web_lobby_kicked_elsewhere": "You connected from another window, so this one was disconnected."
+      "web_lobby_kicked_elsewhere": "You connected from another window, so this one was disconnected.",
+      "web_room_left_notice": "You left the room. Returning to the lobby."
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -668,7 +669,8 @@
       "web_match_rematch": "다시 매칭",
       "web_match_scoreline": "{them}  {a} : {b}  {me}",
       "web_room_closed_idle": "10분 동안 대결이 시작되지 않아 방이 닫혔습니다.",
-      "web_lobby_kicked_elsewhere": "다른 창에서 접속해 이 창의 연결을 끊었습니다."
+      "web_lobby_kicked_elsewhere": "다른 창에서 접속해 이 창의 연결을 끊었습니다.",
+      "web_room_left_notice": "방에서 나왔습니다. 로비로 돌아갑니다."
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -922,7 +924,8 @@
       "web_match_rematch": "再來一場",
       "web_match_scoreline": "{them}  {a} : {b}  {me}",
       "web_room_closed_idle": "10 分鐘內未開始對戰，房間已關閉。",
-      "web_lobby_kicked_elsewhere": "你已從其他視窗連線，此視窗連線已中斷。"
+      "web_lobby_kicked_elsewhere": "你已從其他視窗連線，此視窗連線已中斷。",
+      "web_room_left_notice": "已離開房間，正在返回大廳。"
     }
   },
   "panel_config": {
