@@ -243,6 +243,16 @@ async def ensure_schema(conn):
             settled_at TIMESTAMPTZ
         )
     """)
+    # 전적 조회와 보관 상한 정리가 둘 다 "이 사람이 낀 매치를 최근 순으로" 훑는다.
+    # 한 행이 두 사람 것이라 컬럼마다 인덱스가 따로 필요하다 (OR는 BitmapOr로 합쳐진다).
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS pvp_matches_challenger_idx
+            ON pvp_matches (challenger_id, match_id DESC)
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS pvp_matches_opponent_idx
+            ON pvp_matches (opponent_id, match_id DESC)
+    """)
 
 class ArcadeBot(commands.Bot):
     def __init__(self):
@@ -752,6 +762,7 @@ async def settle_match(conn, match_id: int, winner_id: int | None) -> None:
             "UPDATE pvp_matches SET status = 'finished', winner_id = $2, settled_at = now() "
             "WHERE match_id = $1",
             match_id, winner_id)
+        await trim_match_history(conn, (match["challenger_id"], match["opponent_id"]))
 
 async def cancel_match(conn, match_id: int) -> None:
     """거부/시간초과로 끝난 매치. 이미 판돈을 빼뒀다면 그대로 돌려준다."""
@@ -769,6 +780,38 @@ async def cancel_match(conn, match_id: int) -> None:
         await conn.execute(
             "UPDATE pvp_matches SET status = 'cancelled', settled_at = now() WHERE match_id = $1",
             match_id)
+        await trim_match_history(conn, (match["challenger_id"], match["opponent_id"]))
+
+async def trim_match_history(conn, user_ids) -> None:
+    """끝난 매치 중 **양쪽 모두에게** 최근 N건 밖으로 밀려난 행을 지운다.
+
+    소환 이력과 같은 이유로 상한을 둔다 — 별도 스케줄러 없이 매치가 끝날 때마다 조금씩
+    정리하면 운영 기간과 무관하게 용량이 유저당 고정된다 (Neon 무료 0.5GB를 넘기면
+    INSERT/UPDATE/DELETE가 전부 막혀 봇 전체가 멈춘다).
+
+    **소환 이력과 결정적으로 다른 점: 한 행이 두 사람의 기록이다.** 그래서 "내 최근 20건
+    밖"이라는 이유만으로 지우면 아직 20건 안쪽인 상대의 전적까지 같이 사라진다. 지우는 조건은
+    **두 참가자 모두에게 더 최근인 매치가 이미 N건 이상 있을 것**이다.
+
+    진행 중(`pending`/`playing`)인 행은 판돈을 묶어둔 장부라 절대 지우지 않는다.
+    """
+    keep = config["pvp_config"].get("history_keep_per_user", 20)
+    await conn.execute(
+        """
+        DELETE FROM pvp_matches m
+        WHERE m.status IN ('finished', 'cancelled')
+          AND (m.challenger_id = ANY($1::bigint[]) OR m.opponent_id = ANY($1::bigint[]))
+          AND NOT EXISTS (
+              SELECT 1
+              FROM unnest(ARRAY[m.challenger_id, m.opponent_id]) AS p(uid)
+              WHERE (SELECT count(*) FROM pvp_matches k
+                     WHERE (k.challenger_id = p.uid OR k.opponent_id = p.uid)
+                       AND k.status <> 'pending'
+                       AND k.match_id > m.match_id) < $2
+          )
+        """,
+        list(user_ids), keep,
+    )
 
 async def refund_stale_matches(conn) -> int:
     """봇이 매치 도중에 죽었다 살아난 경우, 묶여 있던 판돈을 전부 돌려준다.
@@ -1101,6 +1144,10 @@ async def handle_deck_data(request):
     data["image_ext"] = config["card_config"].get("image_ext", ".webp")
     data["stat_order"] = list(config["card_config"]["stat_order"])
     data["grades"] = ["R", "R+", "SR", "SSR"]
+    # 두 이력 화면 모두 보관 상한이 있다. 화면에 적어두지 않으면 옛 기록이 사라진 것을
+    # 버그로 오해한다 (상한이 있는 이유는 trim_match_history 참고).
+    data["history_keep"] = config["pvp_config"].get("history_keep_per_user", 20)
+    data["summons_keep"] = config["summon_config"].get("log_keep_per_user", 20)
     data["jobs"] = list(config["card_config"]["job_order"])
     data["elements"] = list(config["card_config"]["element_order"])
     data["messages"] = {
@@ -1116,7 +1163,7 @@ async def handle_deck_data(request):
                     "web_tab_summons", "web_summons_empty", "web_summon_new",
                     "web_summon_enhance", "web_summon_maxed", "web_summon_refund",
                     "web_summon_count", "web_summon_cost",
-                    "web_expired")
+                    "web_keep_note", "web_expired")
     }
     data["stat_labels"] = {key: get_msg(lang, f"stat_{key}") for key in STAT_KEYS}
     data["job_labels"] = {key: get_msg(lang, f"job_{key}") for key in data["jobs"]}
