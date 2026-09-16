@@ -189,11 +189,18 @@
   .tally .digit.out { animation: digitOut .17s ease-in forwards; }
   .tally .digit.in { animation: digitIn .17s ease-out both; }
 
-  /* 속성 보너스: 내 수치가 오르면 숫자 **위**, 상대 수치가 오르면 숫자 **아래** */
-  .tally .bonus { position: absolute; left: 0; right: 0; font-size: 13px; font-weight: 700;
-                  color: var(--gold); white-space: nowrap; }
-  .tally.me .bonus { bottom: 100%; margin-bottom: 4px; text-align: right; }
-  .tally.them .bonus { top: 100%; margin-top: 4px; text-align: left; }
+  /* 속성 보너스: 내 수치가 오르면 숫자 **위**, 상대 수치가 오르면 숫자 **아래**.
+     **+숫자는 글자 아래로 줄을 바꿔** 두 줄로 놓는다 — 한 줄로 두면 가로로 길어져서
+     내민 카드를 덮었다(예전에는 `white-space: nowrap`이라 칸 밖으로 그냥 넘쳐 나갔다).
+     폭은 **수치와 카드 사이 빈 자리**로 제한하고 글자를 VS 쪽에 붙여, 카드 쪽으로
+     넘어가지 않게 한다. 두 clamp는 각각 `.tally`와 `.played`의 가로 위치다. */
+  .tally .bonus { position: absolute; width: max-content; line-height: 1.25;
+                  max-width: calc(clamp(96px, 12.5vw, 176px) - clamp(46px, 5.6vw, 72px) - 6px);
+                  font-size: 12px; font-weight: 700; color: var(--gold); }
+  .tally .bonus b { display: block; font-size: 15px; }
+  /* 내 것은 숫자 **위**로 올라가므로 아래(내 수치)를 가릴 일이 없다 */
+  .tally.me .bonus { bottom: 100%; margin-bottom: 6px; right: 0; text-align: right; }
+  .tally.them .bonus { top: 100%; margin-top: 6px; left: 0; text-align: left; }
   @keyframes burst { 0% { transform: scale(.4); opacity: 0; }
                      60% { transform: scale(1.15); opacity: 1; }
                      100% { transform: scale(1); opacity: 1; } }
@@ -580,8 +587,8 @@ function showClash(round) {
   const tally = (d, who) => `
     <div class="tally ${who}" hidden>
       <span class="num"><span class="digit">${d.base}</span></span>
-      ${d.element_bonus ? `<div class="bonus" hidden>${
-        esc(msg("web_match_element_bonus", { bonus: d.element_bonus }))}</div>` : ""}
+      ${d.element_bonus ? `<div class="bonus" hidden>${esc(msg("web_match_element_bonus"))}` +
+        `<b>+${d.element_bonus}</b></div>` : ""}
     </div>`;
 
   clearClashTimers();
