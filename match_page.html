@@ -85,9 +85,11 @@
   .art .portrait { left: 7.81%; top: 11.72%;
                     width: 84.18%; height: 50.65%;
                     object-fit: contain; }
-  .art .icon { top: 18.36%; transform: translate(-50%, -50%); }
-  .art .job { left: 84.77%; width: 12.30%; }
-  .art .elem { left: 15.23%; width: 14.65%; }
+  /* 두 아이콘은 원본이 똑같은 75x75라 **크기를 한 곳에서 같이 정한다** — 따로 적어두면
+     한쪽만 고쳐져 직업 아이콘만 작아 보인다(실제로 12.30% vs 14.65%로 벌어져 있었다). */
+  .art .icon { top: 18.36%; width: 14.65%; transform: translate(-50%, -50%); }
+  .art .job { left: 84.77%; }
+  .art .elem { left: 15.23%; }
 
   /* 이름은 프레임의 이름칸 안에. 카드가 작아도 읽히도록 글자 크기는 카드 폭에 비례시킨다. */
   .art .cname { left: 9.77%; top: 5.73%;
