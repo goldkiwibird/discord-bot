@@ -162,6 +162,11 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("token") || "";
+// **이 페이지의 id.** 새로고침하거나 창을 새로 열면 달라진다. 서버는 이걸로
+// '같은 페이지의 재연결'과 '다른 창'을 구분한다 — 구분이 없으면 프록시가 연결을 끊고
+// 브라우저가 자동으로 다시 붙을 때마다 "다른 창에서 접속했습니다"가 뜬다.
+const CID = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+
 let data = null;      // 문구/설정 (한 번만 받는다)
 let state = null;     // 로비 스냅샷
 let stopped = false;  // 만료·정원초과·유휴 정리 등으로 끝난 상태
@@ -466,7 +471,8 @@ function openDialog({ title, fields, confirm, onReady, onConfirm }) {
 // 않는다. 특정 한 사람에게만 가므로 접속자 수와 무관하게 싸다)과 유휴 정리 안내.
 let primed = false;
 function connect() {
-  const source = new EventSource(`/api/lobby/stream?token=${encodeURIComponent(token)}`);
+  const source = new EventSource(
+    `/api/lobby/stream?token=${encodeURIComponent(token)}&cid=${CID}`);
   // **목록은 스트림이 열린 뒤에 받아야 한다.** 서버는 이 연결을 보고 "로비에 있는 사람"을 세므로,
   // 먼저 받아오면 접속자 목록에 내가 빠진 채로 그려진다.
   source.onopen = () => {
