@@ -34,28 +34,25 @@
      VS와 내민 카드가 **보드 정중앙**을 기준으로 놓여야 하기 때문. */
   .board { position: relative; height: 100%; min-height: 0; padding: 10px 14px; overflow: hidden; }
 
-  /* 손패는 마주 보는 두 줄이다.
-     상대: **우측 상단 끝에 이름**, 거기서 왼쪽으로 카드.
-     나:  **좌측 하단 끝에 이름**, 거기서 오른쪽으로 카드. */
-  .rail { position: absolute; left: 14px; right: 14px; display: flex; gap: 10px; }
-  .rail.them { top: 10px; justify-content: flex-end; align-items: flex-start; }
-  .rail.me { bottom: 10px; justify-content: flex-start; align-items: flex-end; }
-  .nameplate { flex: none; }
+  /* 손패는 마주 보는 두 칸이고, **이름과 카드를 위아래로 쌓는다.**
+     상대: 우측 상단에 이름 → **그 바로 아래**에 카드.
+     나:  좌측 하단에 이름 → **그 바로 위**에 카드.
+     예전에는 이름과 카드를 한 줄에 나란히 뒀는데, 그러면 **닉네임이 길어질수록 카드가
+     안쪽으로 밀렸다**(긴 이름 하나에 카드 다섯 장이 통째로 움직인다). 위아래로 나누면
+     이름이 아무리 길어도 카드 자리는 그대로다. */
+  .rail { position: absolute; left: 14px; right: 14px; display: flex;
+          flex-direction: column; gap: 6px; }
+  .rail.them { top: 10px; align-items: flex-end; }
+  .rail.me { bottom: 10px; align-items: flex-start; }
+  .nameplate { flex: none; max-width: 100%; }
 
-  /* ── 이름표 ─────────────────────────────── */
-  .nameplate { display: flex; flex-direction: column; gap: 6px; }
-  .rail.them .nameplate { align-items: flex-end; }
-  /* 닉네임은 화면 구석에서도 바로 읽혀야 해서 크게 잡는다 (좁은 화면에서는 줄어든다) */
-  .nameplate .who { font-size: clamp(20px, 2.4vw, 30px); font-weight: 700; white-space: nowrap; }
+  /* ── 이름표 ───────────────────────────────
+     **점수는 가운데 점수판이 말해주므로 여기에는 이름만 둔다.** 예전에는 동그라미(.pip)로
+     딴 판 수를 같이 보여줬는데, 같은 정보를 두 군데서 다르게 표현하면 눈만 분산된다. */
+  .nameplate .who { font-size: clamp(20px, 2.4vw, 30px); font-weight: 700; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; display: block; max-width: 100%; }
   .nameplate.them .who { color: var(--them); }
   .nameplate.me .who { color: var(--me); }
-  .pips { display: flex; gap: 4px; }
-  .pip { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); }
-  .pip.on { border-color: transparent; }
-  .them .pip.on { background: var(--them); box-shadow: 0 0 10px var(--them); }
-  .me .pip.on { background: var(--me); box-shadow: 0 0 10px var(--me); }
-  @keyframes pipPop { 0% { transform: scale(0); } 60% { transform: scale(1.5); } 100% { transform: scale(1); } }
-  .pip.pop { animation: pipPop .4s ease-out; }
 
   /* ── 손패 ───────────────────────────────── */
   /* 양쪽 5장이 한 줄에 같이 놓이므로 카드 폭은 화면에 맞춰 줄어든다 (10장 + 이름 두 개) */
@@ -70,7 +67,8 @@
   .card { width: 140px; flex: none; position: relative; transition: transform .18s, filter .18s; }
   /* 한 줄에 5장씩이라 예전(10장 한 줄)보다 크게 잡을 수 있다. 화면 폭에 비례시켜서
      좁은 화면에서도 이름표까지 한 줄에 들어가게 한다. */
-  .hand .card { width: clamp(52px, 9vw, 120px); flex: none; }
+  /* 한 줄에 **자기 5장만** 놓이므로 예전(10장 + 이름 두 개)보다 넉넉하게 잡을 수 있다 */
+  .hand .card { width: clamp(64px, 11vw, 140px); flex: none; }
   .hand.me .card.pickable { cursor: pointer; }
   /* hover에 drop-shadow를 쓰면 알파 모양을 따라 블러를 계산하느라 매번 새 레이어가 생긴다.
      카드는 프레임 PNG라 box-shadow는 사각형으로 어긋나므로, 블러가 없는 밝기 필터로 대신한다. */
@@ -229,14 +227,25 @@
 
   /* 카드를 고르는 동안에만 보이는 중앙 점수판. 판정 연출 중에는 `.board.clashing .stage`가
      통째로 숨기므로 따로 지울 필요가 없다 — 연출과 겹쳐 보이면 산만하다. */
-  .scoreline { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  .scoreline .tally { display: flex; align-items: center; gap: 16px;
+  .scoreline { display: flex; flex-direction: column; align-items: center; gap: 20px;
+               width: 100%; }
+  /* **점수는 보드(= 패널을 뺀 화면) 정중앙에 고정한다.** 그냥 flex로 늘어놓으면 닉네임
+     길이에 따라 숫자가 좌우로 밀린다. 양옆 칸을 `minmax(0, 1fr)`로 **똑같이** 나누면
+     가운데 칸이 항상 정중앙에 오고, 이름은 각자 자기 칸 안에서 바깥쪽으로 자란다.
+     (`1fr`만 쓰면 긴 이름이 제 칸을 넘겨 늘려버려서 가운데가 다시 밀린다.) */
+  .scoreline .tally { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+                      align-items: center; column-gap: 24px; width: 100%;
                       font-variant-numeric: tabular-nums; }
-  .scoreline .nick { font-size: 15px; font-weight: 700; }
-  .scoreline .nick.them { color: var(--them); }
-  .scoreline .nick.me { color: var(--me); }
-  .scoreline .nums { font-size: 34px; font-weight: 900; letter-spacing: .06em; }
-  .scoreline .round { font-size: 12px; color: var(--dim); }
+  .scoreline .nick { font-size: 18px; font-weight: 700;
+                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 왼쪽(상대)은 **오른쪽 끝에 붙여** 길어지면 왼쪽으로 자라게 하고,
+     오른쪽(나)은 왼쪽 끝에 붙여 오른쪽으로 자라게 한다 — 점수를 침범하지 않는다. */
+  .scoreline .nick.them { color: var(--them); text-align: right; }
+  .scoreline .nick.me { color: var(--me); text-align: left; }
+  .scoreline .nums { font-size: 38px; font-weight: 900; letter-spacing: .06em;
+                     text-align: center; }
+  .scoreline .round { font-size: 17px; font-weight: 600; color: var(--dim);
+                      letter-spacing: .03em; }
 
   /* 덱 선택 — 대전 시작 전에 3개 덱 중 하나를 고른다 (예전엔 디스코드 선택 메뉴였다) */
   .deckpick { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
@@ -391,12 +400,12 @@
     </div>
     <div class="stage" id="stage"><div class="hint" id="hint"></div></div>
     <div class="rail them">
+      <div class="nameplate them"><span class="who" id="themName">—</span></div>
       <div class="hand them" id="themHand"></div>
-      <div class="nameplate them"><span class="who" id="themName">—</span><span class="pips" id="themPips"></span></div>
     </div>
     <div class="rail me">
-      <div class="nameplate me"><span class="who" id="myName">—</span><span class="pips" id="myPips"></span></div>
       <div class="hand me" id="myHand"></div>
+      <div class="nameplate me"><span class="who" id="myName">—</span></div>
     </div>
   </div>
   <aside class="panel">
@@ -478,26 +487,17 @@ function cardHtml(card, extraClass = "", glow = []) {
   </div>`;
 }
 
-function renderPips(el, wins, total) {
-  const before = el.querySelectorAll(".pip.on").length;
-  el.innerHTML = "";
-  for (let i = 0; i < total; i++) {
-    const pip = document.createElement("span");
-    pip.className = "pip" + (i < wins ? " on" : "") + (i === wins - 1 && wins > before ? " pop" : "");
-    el.appendChild(pip);
-  }
-}
-
 function render() {
   const s = state;
   $("themName").textContent = s.them.name;
   $("myName").textContent = s.me.name;
-  renderPips($("themPips"), s.them.wins, s.deck_size);
-  renderPips($("myPips"), s.me.wins, s.deck_size);
 
   // 손패: 이미 낸 카드는 빠지고 남은 카드만 정렬된다 (서버가 remaining에서 제거해준다)
-  $("themHand").innerHTML = s.them.remaining.map(c => cardHtml(c)).join("")
-    || (s.phase === "deck" || s.finished ? "" : `<div class="hint">${msg("match_waiting_deck")}</div>`);
+  // 손패가 비면 **아무것도 적지 않는다.** 예전에는 "상대가 덱을 고르는 중" 안내를 넣었는데
+  // 그게 맞는 상황이 아예 없었다 — 덱 선택 단계(phase "deck")는 따로 걸러내고 있었고,
+  // 라운드 중에 상대 손패가 비었다는 건 **5장을 다 썼다**는 뜻이기 때문이다.
+  // 실제로 마지막 판정 직후, finished가 켜지기 전 스냅샷에서 이 문구가 잠깐 떴다.
+  $("themHand").innerHTML = s.them.remaining.map(c => cardHtml(c)).join("");
 
   const canPick = s.my_turn && !s.finished;
   $("myHand").innerHTML = s.me.remaining
@@ -931,6 +931,15 @@ function openDialog({ title, body, confirm, onReady, onConfirm }) {
 }
 
 function applyRoom(payload) {
+  if (payload.removed) {
+    // 추방당했거나 방에서 빠졌다. 방 화면에 그대로 두면 아직 방에 있는 줄 안다.
+    stopped = true;
+    document.body.innerHTML =
+      `<div style="padding:60px;text-align:center;color:#8d94a5">
+         ${escapeHtml(msg(payload.removed))}</div>`;
+    setTimeout(goLobby, 2200);
+    return;
+  }
   if (payload.kicked === "elsewhere") {
     // 같은 사람이 다른 창에서 접속했다. 창마다 스트림이 생기면 접속자 수가 부풀어서
     // 한 사람당 창 하나만 유지한다 — 이 창은 여기서 멈춘다(다시 연결하지 않는다).
