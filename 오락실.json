@@ -186,7 +186,7 @@
       "stat_evasion": "Evasion",
       "deck_not_enough_cards": "❌ You need at least {need} cards to build a deck (you have {have}). Use /summon first.",
       "deck_link_title": "🃏 Deck Builder",
-      "deck_link_desc": "Open the link below to arrange your deck.\nThis link is private to you and expires in {minutes} minutes.",
+      "deck_link_desc": "Use the button below to arrange your deck.\nThis link is private to you and expires in {minutes} minutes.",
       "deck_error": "❌ An error occurred. Please try again later.",
       "web_tab_deck": "Deck Builder",
       "web_tab_history": "PVP Record",
@@ -335,7 +335,8 @@
       "match_public_declined": "❌ The challenge was declined.",
       "match_public_expired": "⌛ Nobody accepted in time — the challenge expired.",
       "match_public_restarted": "⚠️ The bot restarted, so this match was stopped. Wagers have been refunded.",
-      "web_match_element_bonus": "Element bonus +{bonus}"
+      "web_match_element_bonus": "Element bonus +{bonus}",
+      "deck_link_button": "Open Deck Builder"
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -364,7 +365,7 @@
       "stat_evasion": "회피",
       "deck_not_enough_cards": "❌ 덱을 구성하려면 카드가 최소 {need}장 필요합니다 (현재 {have}장 보유). 먼저 /소환을 이용해주세요.",
       "deck_link_title": "🃏 덱 설정",
-      "deck_link_desc": "아래 링크에서 덱을 구성하세요.\n본인만 열 수 있는 링크이며 {minutes}분 후 만료됩니다.",
+      "deck_link_desc": "아래 버튼으로 덱을 구성하세요.\n본인만 열 수 있는 링크이며 {minutes}분 후 만료됩니다.",
       "deck_error": "❌ 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
       "web_tab_deck": "덱 설정",
       "web_tab_history": "PVP 전적",
@@ -513,7 +514,8 @@
       "match_public_declined": "❌ 상대가 도전을 거부했습니다.",
       "match_public_expired": "⌛ 시간 안에 수락되지 않아 무산되었습니다.",
       "match_public_restarted": "⚠️ 봇이 재시작되어 이 매치는 중단되었습니다. 판돈은 반환되었습니다.",
-      "web_match_element_bonus": "속성 보너스 +{bonus}"
+      "web_match_element_bonus": "속성 보너스 +{bonus}",
+      "deck_link_button": "덱 편성하기"
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -542,7 +544,7 @@
       "stat_evasion": "迴避",
       "deck_not_enough_cards": "❌ 需要至少 {need} 張卡片才能編組牌組（目前持有 {have} 張）。請先使用 /召喚。",
       "deck_link_title": "🃏 牌組設定",
-      "deck_link_desc": "請透過下方連結編組牌組。\n此連結僅限本人開啟，{minutes} 分鐘後失效。",
+      "deck_link_desc": "請點擊下方按鈕編組牌組。\n此連結僅限本人開啟，{minutes} 分鐘後失效。",
       "deck_error": "❌ 發生錯誤，請稍後再試。",
       "web_tab_deck": "牌組設定",
       "web_tab_history": "PVP 戰績",
@@ -691,7 +693,8 @@
       "match_public_declined": "❌ 對方拒絕了戰帖。",
       "match_public_expired": "⌛ 時間內未被接受，戰帖已失效。",
       "match_public_restarted": "⚠️ 機器人重新啟動，本場對戰已中止。賭注已退還。",
-      "web_match_element_bonus": "屬性加成 +{bonus}"
+      "web_match_element_bonus": "屬性加成 +{bonus}",
+      "deck_link_button": "開啟牌組設定"
     }
   },
   "panel_config": {
