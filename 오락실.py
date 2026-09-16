@@ -1466,7 +1466,7 @@ async def handle_match_labels(request):
                 "web_room_spectators", "web_room_spectators_empty",
                 "web_room_invite_title", "web_room_invite_empty", "web_room_invite_sent",
                 "web_room_became_host", "web_room_became_opponent", "web_room_kicked",
-                "web_room_joined_poor", "web_room_seat", "web_room_host_badge",
+                "web_room_joined_poor", "web_room_left_notice", "web_room_seat", "web_room_host_badge",
                 "web_room_sit", "web_room_stand", "web_room_stood", "web_room_demoted_poor",
                 "web_room_seat_taken", "web_room_in_match", "web_room_ready_all",
                 "web_room_closed", "web_room_gone_restart", "web_room_poor", "web_room_no_deck",
@@ -1545,7 +1545,12 @@ async def handle_room_stream(request):
             if room.match is not None and queue not in room.match.subscribers:
                 room.match.subscribers.add(queue)
             if viewer_id not in room.members:
-                break                     # 추방당했거나 스스로 나갔다
+                # 추방당했거나 스스로 나갔다 — **왜 빠졌는지 알려주고** 화면을 로비로 보낸다
+                await response.write(_sse({
+                    "type": "room",
+                    "removed": room.removed.pop(viewer_id, "web_room_left_notice"),
+                }))
+                break
             await response.write(_sse(room.snapshot(viewer_id)))
         if room.closed:
             await response.write(_sse(room.snapshot(viewer_id)))
@@ -1981,8 +1986,10 @@ async def handle_room_kick(request):
 
     async with room.lock:
         room.banned.add(target)
-        room.notices[target] = {"key": "web_room_kicked", "vars": {}}
-        await room.broadcast()            # 쫓겨난 사람에게 사유를 먼저 보여준다
+        # 쫓겨난 사람은 **방 화면에 그대로 두면 안 된다** — 스트림만 끊기고 화면은 방에 남아
+        # 있어서, 본인은 아직 방에 있는 줄 안다. 사유를 남겨두면 스트림이 그걸 실어 보내고
+        # 화면이 안내를 띄운 뒤 로비로 돌려보낸다.
+        room.removed[target] = "web_room_kicked"
         await leave_room(room, target)
     return web.json_response({"ok": True})
 
@@ -2276,7 +2283,7 @@ class PvpMatch:
         me = self.sides.get(viewer_id) or self.challenger
         them = self.other(me.user.id)
 
-        def side_state(side: PvpSide, reveal: bool) -> dict:
+        def side_state(side: PvpSide, reveal: bool, own: bool) -> dict:
             # 덱을 아직 안 골랐으면 카드가 없다. 고른 뒤에는 양쪽 덱이 규칙상 전부 공개된다.
             cards = [web_card(c) for c in side.remaining] if reveal else []
             return {
@@ -2285,8 +2292,13 @@ class PvpMatch:
                 "deck_chosen": side.deck_number is not None,
                 "remaining": cards,
                 "remaining_count": len(side.remaining),
+                # **낸 카드는 본인 것만 내려보낸다.** 예전에는 상대 것도 같이 실려 나갔다
+                # (`side.pick and self.last_round` 조건이라 2라운드부터 계속 새어나갔다).
+                # 화면이 그 값을 쓰지도 않았지만, 스냅샷은 개발자도구로 그냥 보이므로
+                # **상대가 낸 카드를 보고 내 카드를 고를 수 있었다** — 판돈이 걸린 게임에서
+                # 치명적이다. 판정이 끝난 카드는 `last_round`로 따로 나가므로 연출에는 지장이 없다.
                 "picked": side.pick is not None,
-                "pick": web_card(side.pick) if (side.pick and self.last_round) else None,
+                "pick": web_card(side.pick) if (own and side.pick) else None,
             }
 
         both_chose = self.challenger.deck_number is not None and self.opponent.deck_number is not None
@@ -2298,8 +2310,8 @@ class PvpMatch:
             "phase": ("finished" if self.finished
                       else "deck" if not both_chose
                       else "round"),
-            "me": side_state(me, both_chose),
-            "them": side_state(them, both_chose),
+            "me": side_state(me, both_chose, own=viewer_id in self.sides),
+            "them": side_state(them, both_chose, own=False),
             "is_player": viewer_id in self.sides,
             # last_round는 도전자/상대 축으로 담기므로, 화면이 '나/상대' 축으로 바꿀 수 있게 알려준다
             "is_challenger": me.user.id == self.challenger.user.id,
@@ -2668,6 +2680,8 @@ class Room:
         # 직접 '앉기'를 누르면 풀린다.
         self.standing: set[int] = set()
         self.banned: set[int] = set()     # 추방당한 사람. 방이 닫힐 때까지 다시 못 들어온다.
+        # 방에서 빠진 사람에게 **왜 빠졌는지** 한 번 알려주려고 남겨둔다 (스트림이 읽고 지운다).
+        self.removed: dict[int, str] = {}
         self.invited: dict[int, float] = {}   # user_id -> 만료 시각 (비공개 방 비밀번호 면제)
         self.match: PvpMatch | None = None
         self.last_result: dict | None = None   # 지난 판 결과 (대기실에 한 줄로 남긴다)
