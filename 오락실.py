@@ -273,7 +273,19 @@ class ArcadeBot(commands.Bot):
 
     async def setup_hook(self):
         database_url = os.environ["DATABASE_URL"]
-        self.pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+        # **쿼리에 시간 상한을 건다.** 상한이 없으면 한 번 멈춘 쿼리가 연결 하나를 영영
+        # 붙잡고, 연결이 몇 개뿐이라 그 여파가 소환·정산 같은 **다른 기능까지 번진다**.
+        # 실측으로 상한에 걸려 끊긴 뒤에도 그 연결은 그대로 다시 쓸 수 있다(asyncpg가
+        # 서버 쪽 쿼리를 취소하고 연결은 살려둔다).
+        #
+        # 연결 수를 5 -> 10으로 올린 이유: Neon은 원격이라 **한 번 왕복이 ~190ms고 그 대부분이
+        # 기다리는 시간**이다(CPU가 아니다). 기다리는 동안 다른 요청이 그 연결을 못 쓰는 게
+        # 병목이라, 연결을 늘리면 그만큼 겹쳐 처리된다.
+        self.pool = await asyncpg.create_pool(
+            database_url, min_size=1, max_size=10,
+            command_timeout=config["web_config"].get("db_command_timeout_seconds", 10),
+            timeout=config["web_config"].get("db_connect_timeout_seconds", 10),
+        )
 
         async with self.pool.acquire() as conn:
             await ensure_schema(conn)
@@ -1286,12 +1298,14 @@ async def handle_health(request):
             async with bot.pool.acquire() as conn:
                 return await conn.fetchval("SELECT 1")
 
-        database = False
+        database, db_ms = False, None
         if bot.pool is not None:
+            started = time.perf_counter()
             try:
                 database = await asyncio.wait_for(probe_db(), timeout) == 1
             except (asyncpg.PostgresError, OSError, asyncio.TimeoutError):
                 database = False
+            db_ms = round((time.perf_counter() - started) * 1000)
 
         discord_ok = bot.is_ready() and not bot.is_closed()
         healthy = discord_ok and database
@@ -1302,6 +1316,14 @@ async def handle_health(request):
                 "database": database,
                 # 연결 전에는 latency가 NaN이라 그대로 넣으면 JSON으로 직렬화할 수 없다
                 "latency_ms": None if math.isnan(bot.latency) else round(bot.latency * 1000),
+                # **DB가 느린 것과 연결이 모자란 것을 구분하려고** 같이 싣는다.
+                # db_ms만 크면 DB가 느린 것이고, idle이 0인 채로 db_ms가 크면 연결이 모자란 것이다.
+                "db_ms": db_ms,
+                "db_pool": (None if bot.pool is None else
+                            {"size": bot.pool.get_size(), "idle": bot.pool.get_idle_size(),
+                             "max": bot.pool.get_max_size()}),
+                "rooms": len(rooms),
+                "online": len(online_user_ids()),
             },
             status=200 if healthy else 503,
         )
@@ -1345,6 +1367,7 @@ async def handle_room_state(request):
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
     room, entry = resolved
+    room.polled[entry["user_id"]] = time.time()
     return web.json_response(room.snapshot(entry["user_id"]))
 
 
@@ -1363,6 +1386,7 @@ async def handle_lobby_state(request):
         return web.json_response({"error": "expired"}, status=403)
 
     user_id = entry["user_id"]
+    touch_lobby(user_id)
     cooldown = config["lobby_config"].get("refresh_cooldown_seconds", 5)
     last = _lobby_reads.get(user_id)
     now = time.time()
@@ -1416,16 +1440,16 @@ async def handle_match_labels(request):
             for key in (
                 "match_vs", "match_waiting_deck", "match_waiting_pick", "match_opponent_deck",
                 "web_match_spectators", "web_match_pick_prompt", "web_match_your_turn",
-                "web_match_round", "web_match_score", "web_match_win", "web_match_lose",
+                "web_match_round", "web_match_win", "web_match_lose",
                 "web_match_deck_prompt", "web_match_deck_label",
                 "match_cancelled_timeout", "match_cancelled_error",
                 "web_match_draw", "web_match_final_win", "web_match_final_lose",
-                "web_match_final_draw", "web_match_ended", "web_match_lost_connection",
+                "web_match_final_draw", "web_match_lost_connection",
                 "web_match_not_found", "web_match_wager",
                 "pvp_reason_own_lowest", "pvp_reason_both_highest", "pvp_reason_match_opp_lowest",
                 "pvp_reason_direct", "pvp_reason_element_cycle", "pvp_reason_element_light",
                 "pvp_reason_element_basic", "pvp_reason_element_dark",
-                "web_match_element_bonus",
+                "web_match_element_bonus", "web_match_rematch", "web_match_scoreline",
                 # 방 대기실
                 "web_room_waiting_title", "web_room_ready_title", "web_room_empty_slot",
                 "web_room_ready", "web_room_unready", "web_room_ready_done",
@@ -1439,6 +1463,7 @@ async def handle_match_labels(request):
                 "web_room_seat_taken", "web_room_in_match", "web_room_ready_all",
                 "web_room_closed", "web_room_gone_restart", "web_room_poor", "web_room_no_deck",
                 "web_room_back_to_lobby", "web_room_host", "web_room_guest", "web_room_wager",
+                "web_lobby_kicked_elsewhere", "web_room_closed_idle",
                 "web_room_last", "web_room_last_win", "web_room_last_draw",
                 "web_room_last_cancelled",
                 "web_room_friendly",
@@ -1455,8 +1480,12 @@ async def handle_room_stream(request):
     붙이고, 유휴 연결이 끊기지 않도록 주기적으로 주석 하트비트(`: ping`)를 보낸다.
     그래도 막히는 환경이 있을 수 있어 클라이언트는 폴링으로 내려갈 수 있게 해뒀다.
 
-    **이 스트림이 끊겨도 방에서 빼지 않는다** — 새로고침이나 순간적인 네트워크 끊김으로
-    사람이 방에서 튕겨나가면 대결이 엉망이 된다. 방에서 나가는 건 '방 나가기'를 눌렀을 때뿐이다.
+    **스트림이 끊기면 방에서 뺀다**(`drop_disconnected`). 창을 닫거나 연결이 끊긴 사람을
+    그대로 두면 자리와 방이 계속 묶여서, 아무도 없는 방이 목록을 채우고 접속자 수도 부풀려진다.
+    다만 새로고침도 한 번 끊기는 것이라 **몇 초 유예**를 두고, 대결 중이면 그 판이 끝난 뒤에 뺀다.
+
+    **같은 사람의 창은 하나만 유지한다** — 새 창이 붙으면 옛 창을 끊는다. 탭마다 스트림과
+    대기열이 생겨 접속자 수와 메모리가 사람 수보다 부풀기 때문이다.
     """
     resolved = resolve_room_view(request)
     if resolved is None:
@@ -1472,22 +1501,37 @@ async def handle_room_stream(request):
     })
     await response.prepare(request)
 
+    # 같은 사람의 옛 창을 먼저 끊는다 (탭 하나만 유지)
+    close_other_streams(viewer_id)
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
+    live_streams[viewer_id] = queue
     room.subscribers.add(queue)
+    room.viewers[viewer_id] = room.viewers.get(viewer_id, 0) + 1
     if room.match is not None:
         room.match.subscribers.add(queue)
 
     heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
+    tick = min(2, heartbeat)          # 끊김을 빨리 알아채려고 대기를 짧게 끊는다
+    last_ping = time.time()
     try:
         await response.write(_sse(room.snapshot(viewer_id)))
         while not room.closed:
             try:
-                await asyncio.wait_for(queue.get(), heartbeat)
+                payload = await asyncio.wait_for(queue.get(), tick)
             except asyncio.TimeoutError:
+                if gone(request):
+                    break             # 창을 닫았다 — finally가 방에서 빼준다
+                if time.time() - last_ping < heartbeat:
+                    continue
+                last_ping = time.time()
                 # 토큰이 만료되지 않도록 같이 연장한다 (한 판이 길어져도 링크가 안 죽는다)
                 entry["expires"] = time.time() + config["lobby_config"]["token_ttl_seconds"]
                 await response.write(b": ping\n\n")
                 continue
+            if payload is _KICK:
+                # 같은 사람이 다른 창에서 접속했다 — 왜 끊겼는지 알려주고 닫는다
+                await response.write(_sse({"type": "room", "kicked": "elsewhere"}))
+                break
             # 대결이 시작되면 매치 쪽 알림도 받아야 한다 (시작 시점에 구독을 옮겨 붙인다)
             if room.match is not None and queue not in room.match.subscribers:
                 room.match.subscribers.add(queue)
@@ -1502,15 +1546,25 @@ async def handle_room_stream(request):
         room.subscribers.discard(queue)
         if room.match is not None:
             room.match.subscribers.discard(queue)
+        if live_streams.get(viewer_id) is queue:
+            live_streams.pop(viewer_id, None)
+        room.viewers[viewer_id] = max(0, room.viewers.get(viewer_id, 1) - 1)
+        if not room.viewers[viewer_id]:
+            room.viewers.pop(viewer_id, None)
+            if viewer_id in room.members and not room.closed:
+                asyncio.create_task(drop_disconnected(room, viewer_id))
     return response
 
 
 async def handle_lobby_stream(request):
     """로비(방 목록 + 접속자) 실시간 스트림.
 
-    **방에 들어가지 않고 오래 붙잡고 있으면 끊는다**(`lobby_config.idle_timeout_seconds`).
-    로비는 무기한 열려 있어서 창만 띄워두고 잊은 접속이 쌓이면 자리와 메모리를 그대로 먹는다.
-    방에 들어가면 이 페이지를 떠나므로 연결이 끊기고, 로비로 돌아오면 시간이 새로 시작된다.
+    **아무 조작도 없이 오래 붙잡고 있으면 끊는다**(`lobby_config.idle_timeout_seconds`, 10분).
+    기준은 '접속한 지'가 아니라 **'마지막으로 뭔가 한 지'**다 — 목록을 새로고침하거나 방을
+    만들거나 입장을 시도하면 시간이 다시 시작된다. 창만 띄워두고 잊은 접속이 쌓이면 자리와
+    메모리를 그대로 먹기 때문이다.
+
+    **같은 사람의 창은 하나만 유지한다** — 새 창이 붙으면 옛 창을 끊는다.
     """
     entry = resolve_lobby_token(request)
     if entry is None:
@@ -1530,31 +1584,57 @@ async def handle_lobby_stream(request):
     })
     await response.prepare(request)
 
+    close_other_streams(viewer_id)
     session = LobbySession(viewer_id, entry["name"], entry["lang"])
     lobby_sessions.add(session)
+    live_streams[viewer_id] = session.queue
 
     heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
     idle_limit = conf["idle_timeout_seconds"]
+    tick = min(2, heartbeat)
+    last_ping = time.time()
     try:
         # 목록은 화면이 /api/lobby로 직접 받아간다. 여기로는 **초대와 정리 안내만** 나간다.
         await response.write(b": ready\n\n")
         while True:
             try:
-                payload = await asyncio.wait_for(session.queue.get(), heartbeat)
+                payload = await asyncio.wait_for(session.queue.get(), tick)
             except asyncio.TimeoutError:
-                if time.time() - session.opened_at > idle_limit:
+                if gone(request):
+                    break             # 창을 닫았다 — 접속자 집계에서 바로 빠진다
+                if time.time() - session.last_action > idle_limit:
                     await response.write(_sse({"type": "lobby", "kicked": "idle"}))
                     break
+                if time.time() - last_ping < heartbeat:
+                    continue
+                last_ping = time.time()
                 entry["expires"] = time.time() + conf["token_ttl_seconds"]
                 await response.write(b": ping\n\n")
                 continue
+            if payload is _KICK:
+                await response.write(_sse({"type": "lobby", "kicked": "elsewhere"}))
+                break
             # 전파기가 이미 만들어 보낸 JSON을 그대로 흘려보낸다 (여기서 다시 만들지 않는다)
             await response.write(f"data: {payload}\n\n".encode("utf-8"))
     except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
         pass
     finally:
         lobby_sessions.discard(session)
+        if live_streams.get(viewer_id) is session.queue:
+            live_streams.pop(viewer_id, None)
     return response
+
+
+def gone(request) -> bool:
+    """클라이언트가 이미 끊었는지.
+
+    **aiohttp는 상대가 끊어도 핸들러를 깨워주지 않는다** — 다음 쓰기를 시도할 때에야 안다.
+    그래서 하트비트(15초)만 믿으면 창을 닫고 15초가 지나서야 방에서 빠졌다(실제로 그랬다).
+    대기를 짧게 끊고 매번 이걸 확인하면 몇 초 안에 알아챈다. 확인 자체는 공짜라 트래픽이
+    늘지 않는다 — 실제 `: ping`은 여전히 하트비트 주기로만 보낸다.
+    """
+    transport = request.transport
+    return transport is None or transport.is_closing()
 
 
 def _sse(payload: dict) -> bytes:
@@ -1673,6 +1753,7 @@ async def handle_lobby_labels(request):
                 "web_lobby_poor", "web_lobby_already_in_room", "web_lobby_invited",
                 "web_lobby_invite_accept", "web_lobby_invite_decline", "web_lobby_my_points",
                 "web_lobby_refresh", "web_lobby_refresh_wait", "web_lobby_refreshed",
+                "web_lobby_kicked_elsewhere",
                 "web_lobby_name_label", "web_lobby_name_placeholder", "web_lobby_default_name",
                 "web_lobby_filter_visibility", "web_lobby_filter_all", "web_lobby_filter_public",
                 "web_lobby_filter_private", "web_lobby_filter_wager", "web_lobby_filter_search",
@@ -1690,6 +1771,7 @@ async def handle_room_create(request):
     if entry is None:
         return web.json_response({"error": "expired"}, status=403)
     user_id, lang = entry["user_id"], entry["lang"]
+    touch_lobby(user_id)
     if room_of(user_id) is not None:
         return web.json_response({"error": "already_in_room"}, status=409)
     if len(rooms) >= config["lobby_config"]["max_rooms"]:
@@ -1724,6 +1806,7 @@ async def handle_room_join(request):
     if entry is None:
         return web.json_response({"error": "expired"}, status=403)
     user_id = entry["user_id"]
+    touch_lobby(user_id)
 
     body = await _body(request)
     try:
@@ -1821,6 +1904,7 @@ async def handle_room_start(request):
                          PvpSide(opponent, decks[opponent.id]), room.wager, room.lang)
         match.room = room
         room.match = match
+        room.last_active = time.time()      # 방 폭파 시계를 되돌린다
         live_matches[match_id] = match
         # 이미 붙어 있는 방 구독자들이 매치 알림도 받도록 그대로 넘겨준다
         match.subscribers |= room.subscribers
@@ -1828,6 +1912,33 @@ async def handle_room_start(request):
 
     await room.broadcast()
     return web.json_response({"ok": True, "match_id": match_id})
+
+
+async def handle_room_rematch(request):
+    """끝난 판의 결과 화면을 걷고 방을 대기실로 되돌린다 ('다시 매칭').
+
+    **시간이 지나면 저절로 돌아가게 하지 않는다** — 결과를 얼마나 들여다볼지는 사람마다
+    다르고, 자동으로 걷으면 읽던 중에 사라진다. 대신 **방장만** 누를 수 있게 한다:
+    방 전체의 화면을 되돌리는 조작이라, 아직 결과를 보고 있는 사람의 화면까지 같이 치운다.
+    다음 판을 시작하는 것도 방장이므로 권한을 한 사람에게 모아두는 편이 헷갈리지 않는다.
+    """
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    if entry["user_id"] != room.host_id:
+        return web.json_response({"error": "not_host"}, status=403)
+
+    async with room.lock:
+        if room.match is None:
+            return web.json_response({"ok": True})
+        if not room.match.finished:
+            return web.json_response({"error": "in_match"}, status=409)
+        room.match = None
+        # 진 쪽이 판돈을 더는 못 낼 수 있다 — 그대로 두면 시작이 계속 실패하므로 자리를 바꾼다
+        await recheck_seats(room)
+    await room.broadcast()
+    return web.json_response({"ok": True})
 
 
 async def handle_room_leave(request):
@@ -1931,6 +2042,7 @@ async def start_web_server():
     Render 무료 플랜은 들어오는 요청이 한동안 없으면 인스턴스를 재우고(스핀다운), 그동안엔
     봇도 같이 멈춘다. 그래서 UptimeRobot 같은 외부 모니터가 여기를 주기적으로 찔러줘야 한다.
     """
+    start_janitor()
     app = web.Application()
     app.router.add_get("/", lambda req: web.Response(text="Arcade bot is online!"))
     app.router.add_get("/health", handle_health)
@@ -1947,6 +2059,7 @@ async def start_web_server():
     app.router.add_get("/room", handle_room_page)
     app.router.add_post("/api/room/ready", handle_room_ready)
     app.router.add_post("/api/room/start", handle_room_start)
+    app.router.add_post("/api/room/rematch", handle_room_rematch)
     app.router.add_post("/api/room/leave", handle_room_leave)
     app.router.add_post("/api/room/kick", handle_room_kick)
     app.router.add_post("/api/room/seat", handle_room_seat)
@@ -2284,6 +2397,7 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
     room = match.room
     if room is not None:
         room.ready.clear()
+        room.last_active = time.time()
         if reason_key:
             room.last_result = {"key": "web_room_last_cancelled", "vars": {}}
         elif winner_id is None:
@@ -2295,24 +2409,8 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
                                 "vars": {"winner": winner.user.display_name,
                                          "a": winner.wins, "b": loser.wins}}
         await room.broadcast()
-        asyncio.create_task(back_to_waiting(room, match))
 
     # 승패와 포인트 증감은 전부 웹 화면에서 보여준다 — 디스코드로는 아무것도 보내지 않는다.
-
-
-async def back_to_waiting(room, match) -> None:
-    """결과 화면을 잠깐 띄워둔 뒤 방을 대기실로 되돌린다.
-
-    바로 되돌리면 승패 연출을 못 읽고, 안 되돌리면 끝난 판정 화면에 갇혀 다시 시작할 수 없다.
-    사이에 새 판이 시작됐으면(빠르게 다시 시작한 경우) 건드리지 않는다.
-    """
-    await asyncio.sleep(config["lobby_config"].get("result_hold_seconds", 12))
-    if room.closed or room.match is not match:
-        return
-    room.match = None
-    # 진 쪽이 판돈을 더는 못 낼 수 있다 — 그대로 두면 시작이 계속 실패하므로 자리를 바꾼다
-    await recheck_seats(room)
-    await room.broadcast()
 
 
 async def start_round(match: PvpMatch) -> None:
@@ -2469,13 +2567,27 @@ def resolve_lobby_token(request) -> dict | None:
     return entry
 
 
+# **한 사람당 창 하나만 유지한다.** 탭마다 스트림과 대기열이 생기면 접속자 수와 메모리가
+# 사람 수보다 부풀고, 어느 탭이 진짜인지도 알 수 없다. 새 창이 붙으면 옛 창을 끊는다
+# (새 창을 막는 쪽이 아니라 — 옛 창은 이미 닫힌 좀비일 수 있다).
+live_streams: dict[int, asyncio.Queue] = {}   # user_id -> 지금 살아 있는 스트림의 대기열
+_KICK = object()                              # 대기열에 넣으면 "끊어라"라는 뜻
+
+
+def close_other_streams(user_id: int) -> None:
+    queue = live_streams.pop(user_id, None)
+    if queue is None:
+        return
+    try:
+        queue.put_nowait(_KICK)
+    except asyncio.QueueFull:
+        pass
+
+
 class LobbySession:
-    """로비 화면 한 개(탭 한 개)의 접속.
+    """로비 화면 한 개의 접속. 한 사람당 하나만 살아 있다(`close_other_streams`)."""
 
-    같은 사람이 탭을 여러 개 열 수 있어서 **접속자 수는 세션이 아니라 user_id로 센다.**
-    """
-
-    __slots__ = ("user_id", "name", "lang", "queue", "opened_at")
+    __slots__ = ("user_id", "name", "lang", "queue", "opened_at", "last_action")
 
     def __init__(self, user_id: int, name: str, lang: str):
         self.user_id = user_id
@@ -2483,6 +2595,16 @@ class LobbySession:
         self.lang = lang
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=16)
         self.opened_at = time.time()
+        # **마지막으로 뭔가를 한 시각.** 연 시각이 아니라 이걸 기준으로 유휴를 잰다 —
+        # 새로고침·방 만들기·입장 시도 같은 조작이 들어올 때마다 갱신된다(`touch_lobby`).
+        self.last_action = time.time()
+
+
+def touch_lobby(user_id: int) -> None:
+    """그 사람의 로비 세션에 '방금 뭔가 했다'고 표시한다."""
+    for session in lobby_sessions:
+        if session.user_id == user_id:
+            session.last_action = time.time()
 
 
 class Room:
@@ -2511,6 +2633,14 @@ class Room:
         self.invited: dict[int, float] = {}   # user_id -> 만료 시각 (비공개 방 비밀번호 면제)
         self.match: PvpMatch | None = None
         self.last_result: dict | None = None   # 지난 판 결과 (대기실에 한 줄로 남긴다)
+        # 마지막으로 대결이 오간 시각. 이 뒤로 아무 대결도 없으면 방을 닫는다(room_janitor).
+        self.last_active = time.time()
+        # 지금 이 방 화면을 열어둔 사람들 (user_id -> 열려 있는 스트림 수).
+        # 창을 닫으면 방에서 빼야 하는데, **새로고침도 잠깐 0이 되므로** 유예를 둔다.
+        self.viewers: dict[int, int] = {}
+        # 프록시가 SSE를 막아 **폴링으로 보는 사람**은 스트림이 없다. 그 사람까지 끊긴 것으로
+        # 보면 멀쩡히 보고 있는데 방에서 빠지므로, 폴링 조회 시각도 '접속 중'으로 센다.
+        self.polled: dict[int, float] = {}
         self.subscribers: set[asyncio.Queue] = set()
         self.closed = False
         self.close_reason: str | None = None
@@ -2706,6 +2836,58 @@ async def notify_invite(user_id: int, room: "Room") -> None:
             pass
 
 
+_janitor: asyncio.Task | None = None
+
+
+async def room_janitor() -> None:
+    """주기적으로 **대결 없이 놀고 있는 방**을 닫는다.
+
+    방은 메모리에만 있고 닫아주는 사람이 없으면 `max_rooms`(50)를 그대로 채운다 —
+    창을 닫고 사라진 사람들의 빈 방이 목록을 막는다. 사람이 남아 있어도 **10분 동안
+    대결이 한 번도 시작되지 않았으면** 닫는다(`room_idle_timeout_seconds`).
+    대결이 시작되거나 끝날 때마다 `room.last_active`가 갱신되므로 계속 노는 방만 걸린다.
+
+    **만료된 토큰과 낡은 기록도 같이 치운다.** 토큰은 쓸 때만 만료를 확인하므로, 다시 안 쓰는
+    토큰은 그대로 남는다 — 하나가 200바이트 남짓이라 당장 문제는 아니지만 **영원히 늘어나는**
+    자료구조라 오래 돌수록 쌓인다. 어차피 도는 청소부에 얹는 게 자연스럽다.
+    """
+    interval = config["lobby_config"].get("janitor_interval_seconds", 20)
+    limit = config["lobby_config"].get("room_idle_timeout_seconds", 600)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            now = time.time()
+            for room in list(rooms.values()):
+                if room.closed or room.playing:
+                    continue
+                if now - room.last_active > limit:
+                    await close_room(room, reason_key="web_room_closed_idle")
+            sweep_expired(now)
+        except Exception:
+            traceback.print_exc()      # 청소부가 죽으면 방이 영영 안 닫힌다
+
+
+def sweep_expired(now: float) -> None:
+    """만료된 링크 토큰과 다 쓴 기록을 지운다."""
+    for token, entry in list(lobby_tokens.items()):
+        if entry["expires"] <= now:
+            del lobby_tokens[token]
+    for token, (_, _, expires) in list(deck_tokens.items()):
+        if expires <= now:
+            del deck_tokens[token]
+    # 새로고침 간격만 보는 기록이라 그 시간이 지나면 남겨둘 이유가 없다
+    cooldown = config["lobby_config"].get("refresh_cooldown_seconds", 5)
+    for user_id, read_at in list(_lobby_reads.items()):
+        if now - read_at > cooldown:
+            del _lobby_reads[user_id]
+
+
+def start_janitor() -> None:
+    global _janitor
+    if _janitor is None or _janitor.done():
+        _janitor = asyncio.create_task(room_janitor())
+
+
 async def close_room(room: Room, reason_key: str | None = None) -> None:
     """방을 닫고 모두를 내보낸다. 진행 중인 대결이 있으면 먼저 정리한다."""
     if room.closed:
@@ -2770,6 +2952,35 @@ async def recheck_seats(room: Room) -> None:
             room.ready.discard(uid)
             room.notices[uid] = {"key": "web_room_demoted_poor", "vars": {"wager": room.wager}}
     await fill_seats(room)
+
+
+async def drop_disconnected(room: Room, user_id: int) -> None:
+    """방 화면을 닫은 사람을 방에서 뺀다 (유예 시간이 지난 뒤에 확인한다).
+
+    **대결 중이면 그 판이 끝날 때까지 기다렸다가 뺀다** — 카드를 내다 만 사람을 즉시 빼면
+    판이 성립하지 않는다(남은 카드는 `round_timed_out`이 자동으로 내주므로 대결은 끝까지 간다).
+    대결 중이 아니면 바로 뺀다 — 안 그러면 창만 닫고 사라진 사람 때문에 자리와 방이 계속 묶인다.
+
+    유예(`disconnect_grace_seconds`)가 필요한 이유: **새로고침도 스트림이 한 번 끊긴다.**
+    유예 없이 빼면 F5 한 번에 방 밖으로 튕긴다.
+    """
+    grace = config["lobby_config"].get("disconnect_grace_seconds", 5)
+
+    def still_here() -> bool:
+        # 스트림이 다시 붙었거나(새로고침) 폴링으로 계속 보고 있으면 접속 중이다
+        return bool(room.viewers.get(user_id)
+                    or time.time() - room.polled.get(user_id, 0) < grace * 2)
+
+    await asyncio.sleep(grace)
+    if room.closed or still_here():
+        return                                  # 다시 들어왔다 (새로고침이었다)
+    while room.playing and user_id in room.seats:
+        # 진행 중인 판이 끝날 때까지 기다린다. 자동선택으로 어차피 끝까지 간다.
+        await asyncio.sleep(2)
+        if room.closed or still_here():
+            return
+    async with room.lock:
+        await leave_room(room, user_id)
 
 
 async def leave_room(room: Room, user_id: int) -> None:
