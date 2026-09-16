@@ -1160,8 +1160,7 @@ async def handle_deck_page(request):
     resolved = resolve_deck_token(request)
     if resolved is None:
         return web.Response(text=get_msg("en-US", "web_expired"), status=403)
-    with open("deck_page.html", "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html")
+    return html_page("deck_page.html")
 
 async def handle_deck_data(request):
     resolved = resolve_deck_token(request)
@@ -1350,15 +1349,24 @@ def resolve_room_view(request) -> "tuple[Room, dict] | None":
     return room, entry
 
 
+# 화면 파일에는 **캐시 금지 헤더를 붙인다.** 안 붙이면 헤더가 하나도 없어 브라우저가 나름의
+# 기준으로 캐시하는데, 그러면 **배포를 해도 옛 화면이 계속 돌아간다** — 고친 줄 알았는데 증상이
+# 그대로인, 원인 찾기가 가장 성가신 형태의 사고가 난다. 페이지는 몇십 KB뿐이라 아낄 것도 없다.
+NO_CACHE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
+
+
+def html_page(filename: str) -> web.Response:
+    with open(filename, "r", encoding="utf-8") as f:
+        return web.Response(text=f.read(), content_type="text/html", headers=NO_CACHE)
+
+
 async def handle_room_page(request):
     """방 화면. 대기실과 대결이 같은 페이지다 — 시작하면 화면만 바뀐다."""
-    with open("match_page.html", "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html")
+    return html_page("match_page.html")
 
 
 async def handle_lobby_page(request):
-    with open("lobby_page.html", "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html")
+    return html_page("lobby_page.html")
 
 
 async def handle_room_state(request):
@@ -1503,9 +1511,9 @@ async def handle_room_stream(request):
 
     # 같은 사람의 **다른 페이지** 연결만 끊는다 (같은 페이지의 재연결은 그냥 교체)
     cid = client_id(request)
-    close_other_streams(viewer_id, cid)
+    close_other_streams(viewer_id, cid, "room")
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
-    live_streams[viewer_id] = (cid, queue)
+    live_streams[viewer_id] = (cid, queue, request)
     room.subscribers.add(queue)
     room.viewers[viewer_id] = room.viewers.get(viewer_id, 0) + 1
     if room.match is not None:
@@ -1547,7 +1555,7 @@ async def handle_room_stream(request):
         room.subscribers.discard(queue)
         if room.match is not None:
             room.match.subscribers.discard(queue)
-        if (live_streams.get(viewer_id) or (None, None))[1] is queue:
+        if (live_streams.get(viewer_id) or (None, None, None))[1] is queue:
             live_streams.pop(viewer_id, None)
         room.viewers[viewer_id] = max(0, room.viewers.get(viewer_id, 1) - 1)
         if not room.viewers[viewer_id]:
@@ -1586,10 +1594,10 @@ async def handle_lobby_stream(request):
     await response.prepare(request)
 
     cid = client_id(request)
-    close_other_streams(viewer_id, cid)
+    close_other_streams(viewer_id, cid, "lobby")
     session = LobbySession(viewer_id, entry["name"], entry["lang"])
     lobby_sessions.add(session)
-    live_streams[viewer_id] = (cid, session.queue)
+    live_streams[viewer_id] = (cid, session.queue, request)
 
     heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
     idle_limit = conf["idle_timeout_seconds"]
@@ -1622,7 +1630,7 @@ async def handle_lobby_stream(request):
         pass
     finally:
         lobby_sessions.discard(session)
-        if (live_streams.get(viewer_id) or (None, None))[1] is session.queue:
+        if (live_streams.get(viewer_id) or (None, None, None))[1] is session.queue:
             live_streams.pop(viewer_id, None)
     return response
 
@@ -2577,7 +2585,7 @@ def resolve_lobby_token(request) -> dict | None:
 # 알아서 다시 붙는데(프록시가 장시간 연결을 끊는 환경에서는 흔하다), 그걸 새 창으로 오해해서
 # **창을 하나만 열었는데도 "다른 창에서 접속했습니다"가 떴다.** 그래서 페이지를 열 때 만든
 # id(`cid`)를 같이 받아 **id가 다를 때만** 끊는다 — 같은 페이지가 다시 붙는 것은 그냥 교체한다.
-live_streams: dict[int, tuple[str, asyncio.Queue]] = {}   # user_id -> (페이지 id, 대기열)
+live_streams: dict[int, tuple[str, asyncio.Queue, object]] = {}  # user_id -> (페이지 id, 대기열, 요청)
 _KICK = object()                              # 대기열에 넣으면 "끊어라"라는 뜻
 
 
@@ -2585,15 +2593,29 @@ def client_id(request) -> str:
     return request.query.get("cid", "")
 
 
-def close_other_streams(user_id: int, cid: str) -> None:
-    """같은 사람의 **다른 페이지** 연결만 끊는다. 같은 페이지의 재연결이면 조용히 넘어간다."""
+def close_other_streams(user_id: int, cid: str, path: str = "") -> None:
+    """같은 사람의 **다른 페이지** 연결만 끊는다.
+
+    조용히 넘어가야 하는 경우가 둘이다 —
+    ① **같은 페이지의 재연결**(cid가 같다): SSE가 끊기면 브라우저가 알아서 다시 붙는데,
+       그걸 새 창으로 오해하면 창 하나만 열었는데도 안내가 뜬다.
+    ② **옛 연결이 이미 죽어 있는 경우**: 알릴 대상이 없는데 안내를 보내봐야 허공에 쏘는 것이고,
+       그 사이 클라이언트가 새 연결을 맺었다면 엉뚱한 화면을 끊을 위험만 남는다.
+
+    실제로 끊을 때는 **로그를 남긴다** — 운영에서 '안 열었는데 떴다'는 말이 나오면 로그의
+    두 cid를 보고 정말 다른 페이지였는지 바로 가릴 수 있다.
+    """
     entry = live_streams.get(user_id)
     if entry is None:
         return
-    old_cid, queue = entry
+    old_cid, queue, old_request = entry
     live_streams.pop(user_id, None)
     if old_cid == cid:
-        return                      # 같은 페이지가 다시 붙은 것 — 안내를 띄우면 안 된다
+        return                      # ① 같은 페이지가 다시 붙은 것
+    if old_request is not None and gone(old_request):
+        return                      # ② 이미 끊긴 연결 — 조용히 교체한다
+    print(f"⚠️ 같은 사람의 다른 창을 끊음 — uid={user_id} "
+          f"옛cid={old_cid[:8] or '(없음)'} 새cid={cid[:8] or '(없음)'} 새경로={path}")
     try:
         queue.put_nowait(_KICK)
     except asyncio.QueueFull:
