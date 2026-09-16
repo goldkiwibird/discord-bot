@@ -243,6 +243,15 @@ async def ensure_schema(conn):
             settled_at TIMESTAMPTZ
         )
     """)
+    # 참가자 이름을 도전장 만들 때 같이 적어둔다. **디스코드에서 나중에 되물을 수 없기 때문**이다 —
+    # 이 봇은 members(특권) 인텐트가 꺼져 있고, 그러면 discord.py가 store_user를
+    # store_user_no_intents로 갈아끼워 **유저 캐시에 아무것도 넣지 않는다**(2.7.1 소스 확인).
+    # 그래서 `bot.get_user()`는 언제 불러도 None이고, 전적이 전부 "알 수 없는 상대"로 보였다.
+    await conn.execute("""
+        ALTER TABLE pvp_matches
+            ADD COLUMN IF NOT EXISTS challenger_name TEXT,
+            ADD COLUMN IF NOT EXISTS opponent_name TEXT
+    """)
     # 전적 조회와 보관 상한 정리가 둘 다 "이 사람이 낀 매치를 최근 순으로" 훑는다.
     # 한 행이 두 사람 것이라 컬럼마다 인덱스가 따로 필요하다 (OR는 BitmapOr로 합쳐진다).
     await conn.execute("""
@@ -666,10 +675,18 @@ def resolve_match(cards_a: list[dict], cards_b: list[dict]) -> dict:
 
 # --- PVP 판돈 (차감/정산) -----------------------------------------------------
 
-async def create_match(conn, challenger_id: int, opponent_id: int, wager: int) -> tuple[int | None, str | None]:
+async def create_match(conn, challenger_id: int, opponent_id: int, wager: int,
+                       challenger_name: str = "", opponent_name: str = "") -> tuple[int | None, str | None]:
     """도전장 기록만 만든다 (판돈은 아직 안 뺌 — 상대가 수락해야 뺀다).
 
     (match_id, None) 또는 (None, 실패사유)를 돌려준다.
+
+    **이름을 여기서 같이 저장하는 이유**: 나중에 전적 화면에서 ID로 이름을 되찾을 방법이 없다.
+    members 인텐트가 꺼져 있어 `bot.get_user()`가 항상 None이고(ensure_schema 주석 참고),
+    `fetch_user()`로 물어보는 방법은 건마다 HTTP 왕복이 드는 데다 **서버 별명이 아니라 전역
+    아이디**만 준다. 지금 화면에 쓰는 것과 같은 이름을 그 자리에서 적어두는 편이 정확하고 빠르다.
+    대가로 **나중에 이름을 바꿔도 옛 기록은 그때 이름으로 남는다** — 전적은 지나간 일의 기록이라
+    오히려 이쪽이 자연스럽다.
     """
     if challenger_id == opponent_id:
         return None, "self_challenge"
@@ -700,9 +717,10 @@ async def create_match(conn, challenger_id: int, opponent_id: int, wager: int) -
             return None, "opponent_poor"
 
     match_id = await conn.fetchval(
-        "INSERT INTO pvp_matches (challenger_id, opponent_id, wager, status) "
-        "VALUES ($1, $2, $3, 'pending') RETURNING match_id",
-        challenger_id, opponent_id, wager,
+        "INSERT INTO pvp_matches "
+        "(challenger_id, opponent_id, wager, status, challenger_name, opponent_name) "
+        "VALUES ($1, $2, $3, 'pending', $4, $5) RETURNING match_id",
+        challenger_id, opponent_id, wager, challenger_name or None, opponent_name or None,
     )
     return match_id, None
 
@@ -942,12 +960,14 @@ async def fetch_summon_history(conn, user_id: int, lang: str, limit: int) -> lis
 async def fetch_match_history(conn, user_id: int, limit: int) -> list[dict]:
     """PVP 전적. 최근 것부터 `limit`건.
 
-    `pvp_matches`에 이미 쌓여 있어서 새 테이블이 필요 없다. 상대 이름은 DB에 없고(디스코드에만 있음)
-    봇이 캐시에서 못 찾을 수도 있으므로, 이름 해석은 이 함수가 아니라 호출하는 쪽에 맡긴다.
+    `pvp_matches`에 이미 쌓여 있어서 새 테이블이 필요 없다. 상대 이름도 도전장을 만들 때 같이
+    적어둔 것을 그대로 읽는다 — 디스코드에 되물을 수 없기 때문이다(create_match 주석 참고).
+    이름 칸이 생기기 전의 옛 기록은 비어 있고, 그건 화면에서 "알 수 없는 상대"로 적는다.
     """
     rows = await conn.fetch(
         """
-        SELECT match_id, challenger_id, opponent_id, wager, status, winner_id, created_at
+        SELECT match_id, challenger_id, opponent_id, wager, status, winner_id, created_at,
+               challenger_name, opponent_name
         FROM pvp_matches
         WHERE (challenger_id = $1 OR opponent_id = $1)
           AND status <> 'pending'
@@ -959,7 +979,9 @@ async def fetch_match_history(conn, user_id: int, limit: int) -> list[dict]:
 
     history = []
     for row in rows:
-        them = row["opponent_id"] if row["challenger_id"] == user_id else row["challenger_id"]
+        me_is_challenger = row["challenger_id"] == user_id
+        them = row["opponent_id"] if me_is_challenger else row["challenger_id"]
+        them_name = row["opponent_name"] if me_is_challenger else row["challenger_name"]
         if row["status"] != "finished":
             result = "cancelled"          # 취소/무효 — 판돈은 반환된 상태
         elif row["winner_id"] is None:
@@ -975,6 +997,7 @@ async def fetch_match_history(conn, user_id: int, limit: int) -> list[dict]:
         history.append({
             "match_id": row["match_id"],
             "opponent_id": str(them),     # 자바스크립트 Number는 디스코드 ID(64비트)를 못 담는다
+            "opponent_name": them_name or "",
             "result": result,
             "wager": row["wager"],
             "delta": delta,
@@ -1184,12 +1207,9 @@ async def handle_match_history(request):
     async with bot.pool.acquire() as conn:
         matches = await fetch_match_history(conn, user_id, limit)
 
-    # 상대 이름은 디스코드 쪽에만 있다. 캐시에 없으면 ID를 그대로 보여주는 대신 빈 값으로 두고
-    # 화면에서 "알 수 없는 상대"로 표기한다 (여기서 사용자 조회 API를 호출하면 느려진다).
-    for match in matches:
-        user = bot.get_user(int(match["opponent_id"]))
-        match["opponent_name"] = user.display_name if user else ""
-
+    # 이름은 fetch_match_history가 DB에서 같이 읽어온다. 예전에는 여기서 `bot.get_user()`로
+    # 캐시를 뒤졌는데, members 인텐트가 꺼진 이 봇에서는 **그 캐시가 영영 비어 있어**
+    # 전적이 전부 "알 수 없는 상대"로 나왔다 (create_match 주석 참고).
     return web.json_response({"matches": matches})
 
 async def handle_summon_history(request):
@@ -1289,52 +1309,97 @@ async def handle_health(request):
         traceback.print_exc()
         return web.json_response({"status": "error", "error": type(e).__name__}, status=503)
 
-def resolve_match_view(request) -> "tuple[PvpMatch, int | None] | None":
-    """요청이 가리키는 매치와 '보는 사람'을 찾는다.
+def resolve_room_view(request) -> "tuple[Room, dict] | None":
+    """요청이 가리키는 방과 '보는 사람'을 찾는다.
 
-    토큰이 있으면 그 참가자 관점(아래쪽이 본인, 카드 제출 가능), 없으면 관전자(읽기 전용).
-    관전은 링크만 있으면 되므로 토큰을 요구하지 않는다 — 양쪽 덱은 1라운드 시작과 동시에
-    규칙상 전부 공개되는 정보라 숨길 게 없다.
+    **방은 토큰이 있어야 볼 수 있다.** 예전 관전 링크는 토큰이 없어도 열렸는데(주소만 알면
+    누구나), 방에는 비공개·추방·초대 같은 개념이 생겨서 누가 보고 있는지 알아야 한다.
     """
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return None
     try:
-        match_id = int(request.query.get("id", ""))
+        room_id = int(request.query.get("id", ""))
     except ValueError:
         return None
-    match = live_matches.get(match_id)
-    if match is None:
+    room = rooms.get(room_id)
+    if room is None or room.closed or entry["user_id"] not in room.members:
         return None
-
-    entry = match_tokens.get(request.query.get("token", ""))
-    if entry and entry[0] == match_id:
-        return match, entry[1]
-    return match, None
+    return room, entry
 
 
-async def handle_match_page(request):
+async def handle_room_page(request):
+    """방 화면. 대기실과 대결이 같은 페이지다 — 시작하면 화면만 바뀐다."""
     with open("match_page.html", "r", encoding="utf-8") as f:
         return web.Response(text=f.read(), content_type="text/html")
 
 
-async def handle_match_state(request):
+async def handle_lobby_page(request):
+    with open("lobby_page.html", "r", encoding="utf-8") as f:
+        return web.Response(text=f.read(), content_type="text/html")
+
+
+async def handle_room_state(request):
     """SSE가 막혔을 때 쓰는 폴링용 단발 조회 (브라우저가 자동으로 이쪽으로 내려온다)."""
-    resolved = resolve_match_view(request)
+    resolved = resolve_room_view(request)
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
-    match, viewer_id = resolved
-    return web.json_response(match.snapshot(viewer_id))
+    room, entry = resolved
+    return web.json_response(room.snapshot(entry["user_id"]))
+
+
+# 마지막으로 목록을 받아간 시각 (user_id -> 유닉스 시각). 새로고침 연타를 막는다.
+_lobby_reads: dict[int, float] = {}
+
+
+async def handle_lobby_state(request):
+    """방 목록 + 접속자. **첫 입장과 새로고침에만 부른다.**
+
+    서버에서도 간격을 강제한다 — 화면 쪽 제한만 두면 주소를 직접 두드려 우회할 수 있고,
+    이 조회가 로비에서 가장 비싼 작업이라 연타되면 그대로 CPU를 먹는다.
+    """
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+
+    user_id = entry["user_id"]
+    cooldown = config["lobby_config"].get("refresh_cooldown_seconds", 5)
+    last = _lobby_reads.get(user_id)
+    now = time.time()
+    if last is not None and now - last < cooldown:
+        return web.json_response({"error": "too_soon", "retry_after": round(cooldown - (now - last), 1)},
+                                 status=429)
+    _lobby_reads[user_id] = now
+    return web.json_response(lobby_snapshot(user_id))
+
+
+async def handle_room_invitable(request):
+    """방에서 초대할 수 있는 사람들 (로비에 있고 이 방에 없는 사람).
+
+    목록 조회(`/api/lobby`)와 따로 둔 이유: 그쪽은 새로고침 간격 제한이 걸려 있어서,
+    새로고침 직후 초대 창을 열면 막힌다. 여기서는 사람 목록만 주므로 훨씬 가볍기도 하다.
+    """
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, _ = resolved
+    seen: dict[int, str] = {}
+    for session in lobby_sessions:
+        if session.user_id not in room.members and session.user_id not in room.banned:
+            seen.setdefault(session.user_id, session.name)
+    return web.json_response({"users": [{"id": str(uid), "name": name} for uid, name in seen.items()]})
 
 
 async def handle_match_labels(request):
     """대전 화면이 처음 한 번만 받아가는 정적 자료 (문구·라벨·이미지 주소).
 
     상태 스냅샷에 같이 넣으면 이벤트마다 1.5KB씩 따라다니므로 따로 뺐다.
-    언어는 매치에 기록된 값을 쓴다(도전자가 명령어를 실행한 채널 언어).
+    **언어는 방이 아니라 보는 사람 기준**이다 — 한 방에 여러 언어 사용자가 같이 들어온다.
     """
-    resolved = resolve_match_view(request)
-    if resolved is None:
-        return web.json_response({"error": "not_found"}, status=404)
-    match, _ = resolved
-    lang = match.lang
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+    lang = entry["lang"]
 
     return web.json_response({
         "image_base_url": config["card_config"]["image_base_url"],
@@ -1361,26 +1426,43 @@ async def handle_match_labels(request):
                 "pvp_reason_direct", "pvp_reason_element_cycle", "pvp_reason_element_light",
                 "pvp_reason_element_basic", "pvp_reason_element_dark",
                 "web_match_element_bonus",
+                # 방 대기실
+                "web_room_waiting_title", "web_room_ready_title", "web_room_empty_slot",
+                "web_room_ready", "web_room_unready", "web_room_ready_done",
+                "web_room_start", "web_room_start_hint", "web_room_start_wait",
+                "web_room_leave", "web_room_invite", "web_room_kick", "web_room_kick_confirm",
+                "web_room_spectators", "web_room_spectators_empty",
+                "web_room_invite_title", "web_room_invite_empty", "web_room_invite_sent",
+                "web_room_became_host", "web_room_became_opponent", "web_room_kicked",
+                "web_room_joined_poor", "web_room_seat", "web_room_host_badge",
+                "web_room_sit", "web_room_stand", "web_room_stood", "web_room_demoted_poor",
+                "web_room_seat_taken", "web_room_in_match", "web_room_ready_all",
+                "web_room_closed", "web_room_gone_restart", "web_room_poor", "web_room_no_deck",
+                "web_room_back_to_lobby", "web_room_host", "web_room_guest", "web_room_wager",
+                "web_room_last", "web_room_last_win", "web_room_last_draw",
+                "web_room_last_cancelled",
+                "web_room_friendly",
+                "web_room_private", "web_lobby_expired",
             )
         },
     })
 
 
-async def handle_match_stream(request):
-    """매치 상태를 실시간으로 밀어주는 SSE 스트림.
+async def handle_room_stream(request):
+    """방 상태를 실시간으로 밀어주는 SSE 스트림 (대기실과 대결이 같은 스트림이다).
 
     Cloudflare/nginx가 응답을 모아뒀다 내보내면 실시간성이 깨지므로 `X-Accel-Buffering: no`를
     붙이고, 유휴 연결이 끊기지 않도록 주기적으로 주석 하트비트(`: ping`)를 보낸다.
     그래도 막히는 환경이 있을 수 있어 클라이언트는 폴링으로 내려갈 수 있게 해뒀다.
+
+    **이 스트림이 끊겨도 방에서 빼지 않는다** — 새로고침이나 순간적인 네트워크 끊김으로
+    사람이 방에서 튕겨나가면 대결이 엉망이 된다. 방에서 나가는 건 '방 나가기'를 눌렀을 때뿐이다.
     """
-    resolved = resolve_match_view(request)
+    resolved = resolve_room_view(request)
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
-    match, viewer_id = resolved
-
-    is_player = viewer_id in match.sides
-    if not is_player and match.spectators >= config["pvp_config"].get("max_spectators", 50):
-        return web.json_response({"error": "spectators_full"}, status=429)
+    room, entry = resolved
+    viewer_id = entry["user_id"]
 
     response = web.StreamResponse(headers={
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -1391,33 +1473,87 @@ async def handle_match_stream(request):
     await response.prepare(request)
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
-    match.subscribers.add(queue)
-    if is_player:
-        match.web_sides.add(viewer_id)
-    else:
-        match.spectators += 1
-        await match.broadcast()      # 관전자 수가 바뀌었으니 모두에게 알린다
+    room.subscribers.add(queue)
+    if room.match is not None:
+        room.match.subscribers.add(queue)
 
     heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
     try:
-        await response.write(_sse(match.snapshot(viewer_id)))
-        while not match.finished or not queue.empty():
+        await response.write(_sse(room.snapshot(viewer_id)))
+        while not room.closed:
             try:
                 await asyncio.wait_for(queue.get(), heartbeat)
             except asyncio.TimeoutError:
-                await response.write(b": ping\n\n")   # 버퍼를 밀어내고 연결도 유지
+                # 토큰이 만료되지 않도록 같이 연장한다 (한 판이 길어져도 링크가 안 죽는다)
+                entry["expires"] = time.time() + config["lobby_config"]["token_ttl_seconds"]
+                await response.write(b": ping\n\n")
                 continue
-            await response.write(_sse(match.snapshot(viewer_id)))
+            # 대결이 시작되면 매치 쪽 알림도 받아야 한다 (시작 시점에 구독을 옮겨 붙인다)
+            if room.match is not None and queue not in room.match.subscribers:
+                room.match.subscribers.add(queue)
+            if viewer_id not in room.members:
+                break                     # 추방당했거나 스스로 나갔다
+            await response.write(_sse(room.snapshot(viewer_id)))
+        if room.closed:
+            await response.write(_sse(room.snapshot(viewer_id)))
     except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
         pass
     finally:
-        match.subscribers.discard(queue)
-        if is_player:
-            match.web_sides.discard(viewer_id)
-        else:
-            match.spectators = max(0, match.spectators - 1)
-            if not match.finished:
-                await match.broadcast()
+        room.subscribers.discard(queue)
+        if room.match is not None:
+            room.match.subscribers.discard(queue)
+    return response
+
+
+async def handle_lobby_stream(request):
+    """로비(방 목록 + 접속자) 실시간 스트림.
+
+    **방에 들어가지 않고 오래 붙잡고 있으면 끊는다**(`lobby_config.idle_timeout_seconds`).
+    로비는 무기한 열려 있어서 창만 띄워두고 잊은 접속이 쌓이면 자리와 메모리를 그대로 먹는다.
+    방에 들어가면 이 페이지를 떠나므로 연결이 끊기고, 로비로 돌아오면 시간이 새로 시작된다.
+    """
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+
+    conf = config["lobby_config"]
+    viewer_id = entry["user_id"]
+    # 접속 상한은 **사람 수**로 센다 (탭을 여러 개 열어도 한 명). 이미 들어와 있으면 통과.
+    if viewer_id not in online_user_ids() and len(online_user_ids()) >= conf["max_online"]:
+        return web.json_response({"error": "lobby_full"}, status=429)
+
+    response = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    })
+    await response.prepare(request)
+
+    session = LobbySession(viewer_id, entry["name"], entry["lang"])
+    lobby_sessions.add(session)
+
+    heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
+    idle_limit = conf["idle_timeout_seconds"]
+    try:
+        # 목록은 화면이 /api/lobby로 직접 받아간다. 여기로는 **초대와 정리 안내만** 나간다.
+        await response.write(b": ready\n\n")
+        while True:
+            try:
+                payload = await asyncio.wait_for(session.queue.get(), heartbeat)
+            except asyncio.TimeoutError:
+                if time.time() - session.opened_at > idle_limit:
+                    await response.write(_sse({"type": "lobby", "kicked": "idle"}))
+                    break
+                entry["expires"] = time.time() + conf["token_ttl_seconds"]
+                await response.write(b": ping\n\n")
+                continue
+            # 전파기가 이미 만들어 보낸 JSON을 그대로 흘려보낸다 (여기서 다시 만들지 않는다)
+            await response.write(f"data: {payload}\n\n".encode("utf-8"))
+    except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
+        pass
+    finally:
+        lobby_sessions.discard(session)
     return response
 
 
@@ -1427,11 +1563,12 @@ def _sse(payload: dict) -> bytes:
 
 async def handle_match_deck(request):
     """웹에서 이번 대결에 쓸 덱을 고른다. 양쪽이 다 고르면 1라운드가 시작된다."""
-    resolved = resolve_match_view(request)
+    resolved = resolve_room_view(request)
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
-    match, viewer_id = resolved
-    if viewer_id not in match.sides:
+    room, entry = resolved
+    match, viewer_id = room.match, entry["user_id"]
+    if match is None or viewer_id not in match.sides:
         return web.json_response({"error": "not_a_player"}, status=403)
 
     try:
@@ -1462,11 +1599,12 @@ async def handle_match_deck(request):
 
 async def handle_match_pick(request):
     """웹에서 카드를 낸다. 디스코드 선택 메뉴와 **같은 경로를 타야** 경합이 안 난다."""
-    resolved = resolve_match_view(request)
+    resolved = resolve_room_view(request)
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
-    match, viewer_id = resolved
-    if viewer_id not in match.sides:
+    room, entry = resolved
+    match, viewer_id = room.match, entry["user_id"]
+    if match is None or viewer_id not in match.sides:
         return web.json_response({"error": "not_a_player"}, status=403)
 
     try:
@@ -1499,6 +1637,294 @@ async def handle_match_pick(request):
     return web.json_response({"ok": True})
 
 
+async def _body(request) -> dict:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def handle_lobby_labels(request):
+    """로비 화면이 처음 한 번만 받아가는 문구·설정."""
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+    lang = entry["lang"]
+    conf = config["lobby_config"]
+    return web.json_response({
+        "me": {"id": str(entry["user_id"]), "name": entry["name"]},
+        "min_wager": config["pvp_config"]["min_wager"],
+        "password_max_length": conf["password_max_length"],
+        "idle_minutes": max(1, conf["idle_timeout_seconds"] // 60),
+        "refresh_cooldown": conf.get("refresh_cooldown_seconds", 5),
+        "messages": {
+            key: get_msg(lang, key)
+            for key in (
+                "web_lobby_title", "web_lobby_online", "web_lobby_users",
+                "web_lobby_users_empty", "web_lobby_in_rooms", "web_lobby_rooms",
+                "web_lobby_rooms_empty", "web_lobby_create", "web_lobby_create_title",
+                "web_lobby_wager_label", "web_lobby_private_label", "web_lobby_password_label",
+                "web_lobby_confirm", "web_lobby_cancel", "web_lobby_join",
+                "web_lobby_password_prompt", "web_lobby_password_wrong",
+                "web_lobby_password_needed", "web_lobby_banned", "web_lobby_room_gone",
+                "web_lobby_room_full", "web_lobby_rooms_full", "web_lobby_full",
+                "web_lobby_idle_kicked", "web_lobby_expired", "web_lobby_wager_invalid",
+                "web_lobby_poor", "web_lobby_already_in_room", "web_lobby_invited",
+                "web_lobby_invite_accept", "web_lobby_invite_decline", "web_lobby_my_points",
+                "web_lobby_refresh", "web_lobby_refresh_wait", "web_lobby_refreshed",
+                "web_lobby_name_label", "web_lobby_name_placeholder", "web_lobby_default_name",
+                "web_lobby_filter_visibility", "web_lobby_filter_all", "web_lobby_filter_public",
+                "web_lobby_filter_private", "web_lobby_filter_wager", "web_lobby_filter_search",
+                "web_lobby_filter_search_hint", "web_lobby_filter_none",
+                "web_room_host", "web_room_wager", "web_room_friendly", "web_room_private",
+                "web_room_people", "web_room_playing", "web_match_lost_connection",
+            )
+        },
+    })
+
+
+async def handle_room_create(request):
+    """방을 만든다. 만든 사람이 방장이 되고 상대 자리는 비어 있다."""
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, lang = entry["user_id"], entry["lang"]
+    if room_of(user_id) is not None:
+        return web.json_response({"error": "already_in_room"}, status=409)
+    if len(rooms) >= config["lobby_config"]["max_rooms"]:
+        return web.json_response({"error": "rooms_full"}, status=429)
+
+    body = await _body(request)
+    try:
+        wager = int(body.get("wager") or 0)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_wager"}, status=400)
+    if wager < 0 or (wager and wager < config["pvp_config"]["min_wager"]):
+        return web.json_response({"error": "bad_wager"}, status=400)
+
+    password = str(body.get("password") or "")[:config["lobby_config"]["password_max_length"]]
+    name = str(body.get("name") or "").strip()[:40] or get_msg(lang, "web_lobby_default_name",
+                                                               name=entry["name"])
+
+    # 판돈을 못 내면 방부터 못 만들게 한다 — 만들어두고 시작만 계속 실패하면 자리만 막는다
+    if wager and user_id not in await affordable([user_id], wager):
+        return web.json_response({"error": "poor"}, status=409)
+
+    global _room_seq
+    _room_seq += 1
+    room = Room(_room_seq, Player(user_id, entry["name"]), name, wager, password, lang)
+    rooms[room.room_id] = room
+    return web.json_response({"room_id": room.room_id})
+
+
+async def handle_room_join(request):
+    """방에 들어간다. 상대 자리가 비어 있고 판돈을 낼 수 있으면 상대, 아니면 관전자."""
+    entry = resolve_lobby_token(request)
+    if entry is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id = entry["user_id"]
+
+    body = await _body(request)
+    try:
+        room_id = int(body.get("room_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_request"}, status=400)
+    room = rooms.get(room_id)
+    if room is None or room.closed:
+        return web.json_response({"error": "room_gone"}, status=404)
+    if user_id in room.members:
+        return web.json_response({"room_id": room.room_id})          # 이미 들어가 있다
+    if room_of(user_id) is not None:
+        return web.json_response({"error": "already_in_room"}, status=409)
+    if user_id in room.banned:
+        return web.json_response({"error": "banned"}, status=403)
+
+    # **초대받은 사람은 비밀번호를 묻지 않는다** — 방 안에 있는 사람이 직접 부른 것이라
+    # 이미 확인을 거친 셈이다. 목록을 보고 직접 들어오는 경우에는 관전이라도 물어본다.
+    if room.password and not room.is_invited(user_id):
+        if str(body.get("password") or "") != room.password:
+            return web.json_response({"error": "wrong_password"}, status=403)
+
+    async with room.lock:
+        if room.closed:
+            return web.json_response({"error": "room_gone"}, status=404)
+        limit = config["pvp_config"].get("max_spectators", 50)
+        if len(room.members) >= limit + 2:
+            return web.json_response({"error": "room_full"}, status=429)
+        room.members[user_id] = Player(user_id, entry["name"])
+        room.invited.pop(user_id, None)
+        if None in room.seats and not room.playing:
+            # 판돈을 못 내면 자리에 안 앉힌다 (승격 규칙과 같은 기준).
+            # 들여보내되 **왜 관전자가 됐는지는 알려준다** — 안 그러면 자리가 비어 있는데
+            # 왜 나만 못 앉는지 알 길이 없다.
+            if user_id in await affordable([user_id], room.wager):
+                room.seats[room.seats.index(None)] = user_id
+            else:
+                room.notices[user_id] = {"key": "web_room_joined_poor",
+                                         "vars": {"wager": room.wager}}
+    await room.broadcast()
+    return web.json_response({"room_id": room.room_id})
+
+
+async def handle_room_ready(request):
+    """상대가 준비를 켜고 끈다. 준비돼야 방장이 시작할 수 있다."""
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    user_id = entry["user_id"]
+    # 방장은 준비를 누르지 않는다 — 시작 버튼을 누르는 쪽이라 준비한 것으로 본다.
+    if room.seat_of(user_id) is None or user_id == room.host_id or room.match is not None:
+        return web.json_response({"error": "not_opponent"}, status=403)
+    if (await _body(request)).get("ready"):
+        room.ready.add(user_id)
+    else:
+        room.ready.discard(user_id)
+    await room.broadcast()
+    return web.json_response({"ok": True})
+
+
+async def handle_room_start(request):
+    """방장이 대결을 시작한다. **판돈은 바로 여기서 양쪽에서 빠진다.**"""
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    if entry["user_id"] != room.host_id:
+        return web.json_response({"error": "not_host"}, status=403)
+
+    async with room.lock:
+        if not room.can_start:
+            return web.json_response({"error": "not_ready"}, status=409)
+        host = room.members[room.seats[0]]        # 자리 순서가 그대로 도전자/상대가 된다
+        opponent = room.members[room.seats[1]]
+
+        async with bot.pool.acquire() as conn:
+            decks = {}
+            for player in (host, opponent):
+                decks[player.id] = await fetch_battle_decks(conn, player.id, room.lang)
+                if not decks[player.id]:
+                    return web.json_response({"error": "no_deck", "who": str(player.id)}, status=409)
+            match_id, reason = await create_match(
+                conn, host.id, opponent.id, room.wager,
+                challenger_name=host.display_name, opponent_name=opponent.display_name)
+            if reason:
+                return web.json_response({"error": reason}, status=409)
+            # 판돈을 실제로 묶는다. 여기서 실패하면 매치 행도 같이 취소해야 한다.
+            reason = await accept_match(conn, match_id)
+            if reason:
+                await cancel_match(conn, match_id)
+                return web.json_response({"error": reason}, status=409)
+
+        match = PvpMatch(match_id, PvpSide(host, decks[host.id]),
+                         PvpSide(opponent, decks[opponent.id]), room.wager, room.lang)
+        match.room = room
+        room.match = match
+        live_matches[match_id] = match
+        # 이미 붙어 있는 방 구독자들이 매치 알림도 받도록 그대로 넘겨준다
+        match.subscribers |= room.subscribers
+        match.arm(config["pvp_config"]["pick_timeout_seconds"], lambda: deck_timed_out(match))
+
+    await room.broadcast()
+    return web.json_response({"ok": True, "match_id": match_id})
+
+
+async def handle_room_leave(request):
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    async with room.lock:
+        await leave_room(room, entry["user_id"])
+    return web.json_response({"ok": True})
+
+
+async def handle_room_kick(request):
+    """방장이 내보낸다. **대결이 시작된 뒤에는 관전자만** 내보낼 수 있다."""
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    if entry["user_id"] != room.host_id:
+        return web.json_response({"error": "not_host"}, status=403)
+    try:
+        target = int((await _body(request)).get("user_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_request"}, status=400)
+    if target == room.host_id or target not in room.members:
+        return web.json_response({"error": "bad_target"}, status=400)
+    if room.playing and target in room.seats:
+        # 대결 중에 상대를 내보낼 수 있으면 지고 있을 때 판을 엎을 수 있다
+        return web.json_response({"error": "in_match"}, status=409)
+
+    async with room.lock:
+        room.banned.add(target)
+        room.notices[target] = {"key": "web_room_kicked", "vars": {}}
+        await room.broadcast()            # 쫓겨난 사람에게 사유를 먼저 보여준다
+        await leave_room(room, target)
+    return web.json_response({"ok": True})
+
+
+async def handle_room_seat(request):
+    """빈 자리에 앉거나(sit), 관전으로 물러난다(stand).
+
+    **대결 중에는 자리를 바꿀 수 없다** — 카드를 내다 말고 빠지면 판이 성립하지 않는다.
+    물러나면 빈 자리는 곧바로 관전자 중에서 채워지므로(`fill_seats`), 관전자가 있으면
+    사실상 교대가 된다. 방장이 물러나도 **방장 권한은 그대로 남는다** (자리와 권한은 별개).
+    """
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    user_id = entry["user_id"]
+    if room.playing:
+        return web.json_response({"error": "in_match"}, status=409)
+
+    body = await _body(request)
+    async with room.lock:
+        if body.get("sit"):
+            if room.seat_of(user_id) is not None:
+                return web.json_response({"ok": True})
+            if None not in room.seats:
+                return web.json_response({"error": "seat_taken"}, status=409)
+            if user_id not in await affordable([user_id], room.wager):
+                return web.json_response({"error": "poor", "wager": room.wager}, status=409)
+            room.seats[room.seats.index(None)] = user_id
+            room.standing.discard(user_id)
+        else:
+            seat = room.seat_of(user_id)
+            if seat is None:
+                return web.json_response({"ok": True})
+            room.seats[seat] = None
+            room.ready.discard(user_id)
+            room.standing.add(user_id)
+            room.notices[user_id] = {"key": "web_room_stood", "vars": {}}
+            await fill_seats(room)
+    await room.broadcast()
+    return web.json_response({"ok": True})
+
+
+async def handle_room_invite(request):
+    """방 안에 있는 사람(관전자 포함)이 로비에 있는 사람을 부른다."""
+    resolved = resolve_room_view(request)
+    if resolved is None:
+        return web.json_response({"error": "not_found"}, status=404)
+    room, entry = resolved
+    try:
+        target = int((await _body(request)).get("user_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_request"}, status=400)
+    if target in room.members or target in room.banned:
+        return web.json_response({"error": "bad_target"}, status=400)
+    if not any(session.user_id == target for session in lobby_sessions):
+        return web.json_response({"error": "not_in_lobby"}, status=404)
+
+    room.invited[target] = time.time() + config["lobby_config"]["invite_ttl_seconds"]
+    await notify_invite(target, room)
+    return web.json_response({"ok": True})
+
+
 async def start_web_server():
     """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다.
 
@@ -1512,10 +1938,24 @@ async def start_web_server():
     app.router.add_get("/api/deck", handle_deck_data)
     app.router.add_get("/api/history", handle_match_history)
     app.router.add_get("/api/summons", handle_summon_history)
-    app.router.add_get("/match", handle_match_page)
-    app.router.add_get("/api/match", handle_match_state)
+    app.router.add_get("/lobby", handle_lobby_page)
+    app.router.add_get("/api/lobby", handle_lobby_state)
+    app.router.add_get("/api/lobby/labels", handle_lobby_labels)
+    app.router.add_get("/api/lobby/stream", handle_lobby_stream)
+    app.router.add_post("/api/lobby/create", handle_room_create)
+    app.router.add_post("/api/lobby/join", handle_room_join)
+    app.router.add_get("/room", handle_room_page)
+    app.router.add_post("/api/room/ready", handle_room_ready)
+    app.router.add_post("/api/room/start", handle_room_start)
+    app.router.add_post("/api/room/leave", handle_room_leave)
+    app.router.add_post("/api/room/kick", handle_room_kick)
+    app.router.add_post("/api/room/seat", handle_room_seat)
+    app.router.add_post("/api/room/invite", handle_room_invite)
+    app.router.add_get("/api/room/invitable", handle_room_invitable)
+    app.router.add_get("/match", handle_room_page)
+    app.router.add_get("/api/match", handle_room_state)
     app.router.add_get("/api/match/labels", handle_match_labels)
-    app.router.add_get("/api/match/stream", handle_match_stream)
+    app.router.add_get("/api/match/stream", handle_room_stream)
     app.router.add_post("/api/match/deck", handle_match_deck)
     app.router.add_post("/api/match/pick", handle_match_pick)
     app.router.add_post("/api/deck", handle_deck_save)
@@ -1533,6 +1973,57 @@ def web_base_url() -> str:
     return (config["web_config"]["base_url"]
             or os.getenv("RENDER_EXTERNAL_URL")
             or f"http://localhost:{os.environ.get('PORT', 10000)}").rstrip("/")
+
+async def do_arcade(interaction: discord.Interaction):
+    """카드게임 로비 링크 발급. 패널 버튼에서 호출한다.
+
+    **로비는 웹에만 있고 디스코드 버튼은 입장권만 준다.** 링크 버튼은 눌러도 봇에 신호가
+    오지 않아서(= 누가 눌렀는지 알 수 없다) 한 번에 열어줄 수 없다 — 그래서 일반 버튼으로
+    받아 본인 확인을 하고, 그 사람 이름이 박힌 토큰 링크를 나만 보이는 메시지로 준다.
+    닉네임을 여기서 받아두는 이유는 members 인텐트가 없어 나중에 id로 되찾을 수 없기 때문이다.
+    """
+    await interaction.response.defer(ephemeral=True)
+    lang = resolve_lang(interaction)
+    deck_size = config["deck_config"]["deck_size"]
+
+    try:
+        async with bot.pool.acquire() as conn:
+            owned = await conn.fetchval(
+                "SELECT count(*) FROM user_cards WHERE user_id = $1", interaction.user.id)
+    except Exception as e:
+        print(f"⚠️ 로비 입장 처리 중 DB 오류: {e}")
+        await interaction.followup.send(get_msg(lang, "arcade_error"), ephemeral=True)
+        return
+
+    # 덱이 없으면 방에 들어가도 시작할 수 없으니 **로비 입장 자체를 막는다**.
+    # 그냥 막기만 하면 뭘 해야 하는지 모르므로 덱 편성 링크를 같이 준다 — 덱을 짜고
+    # 다시 카드게임을 누르면 된다.
+    if owned < deck_size:
+        deck_token = issue_deck_token(interaction.user.id, lang)
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            label=get_msg(lang, "deck_link_button"),
+            url=f"{web_base_url()}/deck?token={deck_token}",
+        ))
+        await interaction.followup.send(
+            get_msg(lang, "arcade_no_deck", size=deck_size), view=view, ephemeral=True)
+        return
+
+    token = issue_lobby_token(interaction.user.id, interaction.user.display_name, lang)
+    embed = discord.Embed(
+        title=get_msg(lang, "arcade_link_title"),
+        description=get_msg(lang, "arcade_link_desc"),
+        color=discord.Color.blurple(),
+    )
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.link,
+        label=get_msg(lang, "arcade_link_button"),
+        url=f"{web_base_url()}/lobby?token={token}",
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
 
 async def do_deck(interaction: discord.Interaction):
     """덱 편성 웹페이지 링크 발급. 패널 버튼에서 호출한다."""
@@ -1578,16 +2069,15 @@ async def do_deck(interaction: discord.Interaction):
 # 묶여 있던 판돈은 시작할 때 refund_stale_matches()가 되돌려준다.
 
 class PvpSide:
-    """한 참가자 쪽 상태 (덱, 남은 카드, 이번 라운드에 낸 카드, DM 메시지)."""
+    """한 참가자 쪽 상태 (덱, 남은 카드, 이번 라운드에 낸 카드)."""
 
-    def __init__(self, user: discord.User, decks: dict[int, list[dict]]):
-        self.user = user
+    def __init__(self, user, decks: dict[int, list[dict]]):
+        self.user = user            # Player (id + display_name). 디스코드 객체가 아니다.
         self.decks = decks
         self.deck_number: int | None = None
         self.remaining: list[dict] = []
         self.pick: dict | None = None
         self.wins = 0
-        self.message: discord.Message | None = None  # 계속 갱신할 DM 메시지
 
     def choose_deck(self, number: int) -> None:
         self.deck_number = number
@@ -1603,9 +2093,8 @@ class PvpMatch:
         self.round_no = 0
         self.finished = False
         self.lock = asyncio.Lock()  # 두 사람이 동시에 눌러도 라운드가 두 번 진행되지 않도록
-        # 공개 대결이면 공개매치 채널에 올라간 그 매치의 메시지. 도전장 -> 진행 중 -> 종료로
-        # **한 메시지를 계속 고쳐 쓴다** (매치마다 메시지가 세 개씩 쌓이지 않게).
-        self.public_message = None
+        # 이 매치가 벌어지고 있는 방. 끝났을 때 방 화면을 다시 대기실로 돌리는 데 쓴다.
+        self.room = None
         # 웹 관전/조작 화면에 상태를 밀어줄 SSE 구독자들. 참가자와 관전자가 같이 들어 있다.
         # 실측으로 연결 1개가 156KB라 수천 개까지 버티지만, 관전자는 상한을 둔다.
         self.subscribers: set[asyncio.Queue] = set()
@@ -1728,15 +2217,9 @@ class PvpMatch:
     def other(self, user_id: int) -> PvpSide:
         return self.opponent if user_id == self.challenger.user.id else self.challenger
 
-live_matches: dict[int, PvpMatch] = {}   # match_id -> 매치 (웹 관전/조작이 id로 찾는다)
-# 웹에서 카드를 낼 수 있는 권한. 관전 링크는 토큰이 없어 읽기 전용이 된다.
-match_tokens: dict[str, tuple[int, int]] = {}   # token -> (match_id, user_id)
-
-
-def issue_match_token(match_id: int, user_id: int) -> str:
-    token = secrets.token_urlsafe(18)
-    match_tokens[token] = (match_id, user_id)
-    return token
+live_matches: dict[int, PvpMatch] = {}   # match_id -> 진행 중인 매치
+# 웹에서 조작할 권한은 **로비 토큰 + 방 소속**으로 판단한다 (resolve_room_view 참고).
+# 예전에는 매치마다 토큰을 따로 발급했는데, 방이 생기면서 그 역할을 방 소속이 대신한다.
 
 
 def web_card(card: dict) -> dict:
@@ -1795,27 +2278,41 @@ async def finish_match(match: PvpMatch, winner_id: int | None, reason_key: str |
 
     await match.broadcast()          # 웹 화면에 승패 연출을 먼저 띄운다
     live_matches.pop(match.match_id, None)
-    for token, (mid, _) in list(match_tokens.items()):
-        if mid == match.match_id:
-            del match_tokens[token]
 
-    # 공개 대결이면 채널에 남아 있는 메시지를 '종료'로 바꾼다. 안 그러면 끝난 매치가
-    # 계속 '진행 중'으로 보이고, 이미 죽은 관전 링크를 누르게 된다.
-    if match.public_message is not None:
+    # 방은 그대로 남는다 — 같은 사람들끼리 한 판 더 하려면 방을 다시 만들지 않아도 되게.
+    # 결과를 잠깐 보여준 뒤(승패 연출을 읽을 시간) 대기실로 되돌린다.
+    room = match.room
+    if room is not None:
+        room.ready.clear()
         if reason_key:
-            detail = get_msg(match.lang, reason_key)
+            room.last_result = {"key": "web_room_last_cancelled", "vars": {}}
         elif winner_id is None:
-            detail = get_msg(match.lang, "match_public_result_draw",
-                             a=match.challenger.wins, b=match.opponent.wins)
+            room.last_result = {"key": "web_room_last_draw",
+                                "vars": {"a": match.challenger.wins, "b": match.opponent.wins}}
         else:
-            detail = get_msg(match.lang, "match_public_result_win",
-                             winner=match.sides[winner_id].user.display_name,
-                             a=match.challenger.wins, b=match.opponent.wins)
-        await edit_public_match(match.public_message, match.lang, match.challenger.user,
-                                match.opponent.user, match.wager,
-                                state="ended", detail=detail)
+            winner, loser = match.sides[winner_id], match.other(winner_id)
+            room.last_result = {"key": "web_room_last_win",
+                                "vars": {"winner": winner.user.display_name,
+                                         "a": winner.wins, "b": loser.wins}}
+        await room.broadcast()
+        asyncio.create_task(back_to_waiting(room, match))
 
     # 승패와 포인트 증감은 전부 웹 화면에서 보여준다 — 디스코드로는 아무것도 보내지 않는다.
+
+
+async def back_to_waiting(room, match) -> None:
+    """결과 화면을 잠깐 띄워둔 뒤 방을 대기실로 되돌린다.
+
+    바로 되돌리면 승패 연출을 못 읽고, 안 되돌리면 끝난 판정 화면에 갇혀 다시 시작할 수 없다.
+    사이에 새 판이 시작됐으면(빠르게 다시 시작한 경우) 건드리지 않는다.
+    """
+    await asyncio.sleep(config["lobby_config"].get("result_hold_seconds", 12))
+    if room.closed or room.match is not match:
+        return
+    room.match = None
+    # 진 쪽이 판돈을 더는 못 낼 수 있다 — 그대로 두면 시작이 계속 실패하므로 자리를 바꾼다
+    await recheck_seats(room)
+    await room.broadcast()
 
 
 async def start_round(match: PvpMatch) -> None:
@@ -1916,276 +2413,402 @@ async def resolve_round(match: PvpMatch) -> None:
                      else b.user.id if b.wins > a.wins else None)
         await finish_match(match, winner_id)
 
-def public_match_channel(channel) -> "discord.TextChannel | None":
-    """공개 대결을 올릴 채널 — 패널을 누른 채널이 **아니라 같은 카테고리의 공개매치 채널**이다.
+# --- 로비와 방 ---------------------------------------------------------------
+# 대결은 **전부 웹에서 시작한다.** 예전에는 디스코드에서 상대를 고르고 DM으로 도전장을 보냈는데,
+# 그러면 (1) 상대가 접속해 있는지 알 수 없고 (2) DM이 막힌 사람에게는 도전 자체가 불가능했다.
+# 지금은 디스코드 버튼이 로비 링크만 주고, 방을 만들고 들어가는 일은 로비 화면에서 한다.
+#
+# **상태는 전부 메모리에만 둔다.** 봇이 재시작되면 방이 사라지고 화면에는 안내가 뜬다 —
+# 판돈을 "게임 시작" 시점에만 차감하므로 대기 중인 방이 날아가도 포인트 손해는 없다.
 
-    패널 채널(🕹️오락실)에 도전장과 관전 링크가 쌓이면 버튼 패널이 위로 밀려 올라가
-    정작 기능을 쓰기 어려워진다. 그래서 언어 카테고리마다 따로 둔 채널
-    (`panel_config.categories[*].match_channel`)로 보낸다.
+class Player:
+    """대결 참가자의 최소 정보 (id + 표시 이름).
+
+    `discord.User`를 그대로 들고 다니지 않는 이유: 진행이 전부 웹으로 옮겨가 디스코드로는
+    아무것도 보내지 않고, 이름은 로비에 들어온 시점에 이미 받아뒀기 때문이다. 게다가 이 봇은
+    members 인텐트가 없어 **나중에 id로 유저 객체를 되찾을 수 없다**(fetch_match_history 주석 참고).
     """
-    category = getattr(channel, "category", None)
-    if category is None:
+
+    __slots__ = ("id", "display_name")
+
+    def __init__(self, user_id: int, display_name: str):
+        self.id = user_id
+        self.display_name = display_name
+
+
+# 로비 입장권. 디스코드에서 카드게임 버튼을 누른 사람에게만 발급한다.
+# 덱 링크(30분)보다 훨씬 길고, 접속해 있는 동안에는 계속 연장된다 — 로비는 무기한 열려 있어서
+# 오래 머무는 게 정상이고, 대결 도중에 링크가 죽으면 그대로 몰수패가 되기 때문이다.
+lobby_tokens: dict[str, dict] = {}       # token -> {user_id, name, lang, expires}
+rooms: dict[int, "Room"] = {}            # room_id -> 방
+lobby_sessions: set["LobbySession"] = set()
+_room_seq = 0
+
+
+def issue_lobby_token(user_id: int, name: str, lang: str) -> str:
+    token = secrets.token_urlsafe(18)
+    ttl = config["lobby_config"]["token_ttl_seconds"]
+    lobby_tokens[token] = {"user_id": user_id, "name": name, "lang": lang,
+                           "expires": time.time() + ttl}
+    return token
+
+
+def resolve_lobby_token(request) -> dict | None:
+    """토큰을 확인하고 **유효기간을 연장한다**.
+
+    연장하는 이유: 로비에 머무는 동안이나 한 판 하는 동안 링크가 만료되면 화면이 죽는다.
+    반대로 창을 닫고 손을 떼면 그대로 만료되므로, 링크가 영원히 사는 것도 아니다.
+    """
+    entry = lobby_tokens.get(request.query.get("token", ""))
+    if entry is None:
         return None
-    conf = config.get("panel_config", {}).get("categories", {}).get(category.name, {})
-    name = conf.get("match_channel")
-    return discord.utils.get(category.text_channels, name=name) if name else None
+    if entry["expires"] < time.time():
+        lobby_tokens.pop(request.query.get("token", ""), None)
+        return None
+    entry["expires"] = time.time() + config["lobby_config"]["token_ttl_seconds"]
+    return entry
 
 
-def public_match_channel_name(channel) -> str:
-    """설정에 적힌 공개매치 채널 이름 (안내 문구용 — 채널이 실제로 없어도 이름은 알려준다)."""
-    category = getattr(channel, "category", None)
-    conf = config.get("panel_config", {}).get("categories", {}).get(
-        getattr(category, "name", ""), {})
-    return conf.get("match_channel", "")
+class LobbySession:
+    """로비 화면 한 개(탭 한 개)의 접속.
+
+    같은 사람이 탭을 여러 개 열 수 있어서 **접속자 수는 세션이 아니라 user_id로 센다.**
+    """
+
+    __slots__ = ("user_id", "name", "lang", "queue", "opened_at")
+
+    def __init__(self, user_id: int, name: str, lang: str):
+        self.user_id = user_id
+        self.name = name
+        self.lang = lang
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+        self.opened_at = time.time()
 
 
-def public_match_embed(lang: str, challenger, opponent, wager: int, *,
-                       state: str, url: str = "", detail: str = "") -> discord.Embed:
-    """공개매치 채널에 올라가는 매치 카드. `state`는 live(진행 중) / ended(종료)."""
-    lines = [
-        get_msg(lang, "match_public_players",
-                challenger=challenger.display_name, opponent=opponent.display_name),
-        get_msg(lang, "match_public_wager", wager=wager) if wager
-        else get_msg(lang, "match_public_friendly"),
-    ]
-    if detail:
-        lines.append(detail)
-    if url:
-        lines.append(get_msg(lang, "match_public_spectate", url=url))
-    return discord.Embed(
-        title=get_msg(lang, f"match_public_{state}_title"),
-        description="\n".join(lines),
-        color=discord.Color.green() if state == "live" else discord.Color.dark_grey(),
-    )
+class Room:
+    """대결 방 하나. 방장 + 상대 + 관전자, 그리고 시작되면 PvpMatch를 품는다."""
 
+    def __init__(self, room_id: int, host: Player, name: str, wager: int, password: str, lang: str):
+        self.room_id = room_id
+        self.name = name
+        self.wager = wager
+        self.password = password          # ""면 공개 방
+        self.lang = lang
+        self.created_at = time.time()
+        # 입장 순서를 유지한다 — 방장 승계와 상대 승격이 "먼저 들어온 사람" 순이다.
+        self.members: dict[int, Player] = {host.id: host}
+        # **방장(권한)과 대전자(자리)는 다른 개념이다.** 방장은 시작·추방 권한을 갖고,
+        # 자리는 실제로 카드를 내는 두 사람이다. 방장도 관전으로 물러날 수 있어야 해서
+        # 둘을 하나로 묶어두면 물러날 자리가 없다(예전에는 host_id가 곧 1번 대전자였다).
+        self.host_id = host.id
+        self.seats: list[int | None] = [host.id, None]
+        self.ready: set[int] = set()
+        # **스스로 관전으로 물러난 사람.** 이게 없으면 물러나자마자 `fill_seats`가 관전자
+        # 맨 앞에서 그 사람을 도로 앉힌다(들어온 순서상 대개 본인이 맨 앞이다).
+        # 직접 '앉기'를 누르면 풀린다.
+        self.standing: set[int] = set()
+        self.banned: set[int] = set()     # 추방당한 사람. 방이 닫힐 때까지 다시 못 들어온다.
+        self.invited: dict[int, float] = {}   # user_id -> 만료 시각 (비공개 방 비밀번호 면제)
+        self.match: PvpMatch | None = None
+        self.last_result: dict | None = None   # 지난 판 결과 (대기실에 한 줄로 남긴다)
+        self.subscribers: set[asyncio.Queue] = set()
+        self.closed = False
+        self.close_reason: str | None = None
+        # 그 사람에게 한 번만 보여줄 안내 (승격/추방 등). 스냅샷에 실어 보내고 지운다.
+        # 값은 {"key": 문구키, "vars": {...}} 꼴이다 — 판돈 같은 숫자를 끼워 넣어야 해서.
+        self.notices: dict[int, dict] = {}
+        self.lock = asyncio.Lock()
 
-async def edit_public_match(message, lang: str, challenger, opponent, wager: int, *,
-                            state: str, url: str = "", detail: str = "") -> None:
-    """공개매치 메시지를 새 상태로 바꾼다. 버튼은 떼어낸다 (누를 수 있는 시점이 지났으므로)."""
-    if message is None:
-        return
-    try:
-        await message.edit(
-            embed=public_match_embed(lang, challenger, opponent, wager,
-                                     state=state, url=url, detail=detail),
-            view=None)
-    except Exception as e:
-        # **채널 메시지 갱신은 꾸밈이다. 여기서 예외가 새면 안 된다.**
-        # finish_match 한가운데서 불리므로, 터지면 그 뒤의 정리가 통째로 건너뛰어진다.
-        # on_timeout에서 터지면 도전장이 'pending'으로 남아 다음 대결까지 막힌다.
-        print(f"⚠️ 공개 매치 메시지 갱신 실패 (매치는 정상 진행): {e}")
+    # -- 구성 ---------------------------------------------------------------
+    @property
+    def spectator_ids(self) -> list[int]:
+        """자리에 앉지 않은 사람들. **입장 순서를 유지한다** (승격이 먼저 온 순이다)."""
+        return [uid for uid in self.members if uid not in self.seats]
 
+    @property
+    def seated_ids(self) -> list[int]:
+        return [uid for uid in self.seats if uid is not None]
 
-class MatchInviteView(discord.ui.View):
-    """도전장 DM에 붙는 수락/거부 버튼."""
+    def seat_of(self, user_id: int) -> int | None:
+        return self.seats.index(user_id) if user_id in self.seats else None
 
-    def __init__(self, match_id: int, challenger: discord.User, opponent: discord.User,
-                 wager: int, lang: str):
-        super().__init__(timeout=config["pvp_config"]["invite_timeout_seconds"])
-        self.match_id, self.challenger, self.opponent = match_id, challenger, opponent
-        self.wager, self.lang = wager, lang
-        self.answered = False
-        # 공개 대결이면 start_match가 공개매치 채널에 올린 메시지를 여기에 넣어준다.
-        # 비공개면 None이고 도전장은 상대 DM으로만 간다.
-        self.public_message = None
+    @property
+    def can_start(self) -> bool:
+        """두 자리가 다 차고, **방장이 아닌 대전자가 전부 준비**했는가.
 
-        accept = discord.ui.Button(label=get_msg(lang, "match_accept"), style=discord.ButtonStyle.success)
-        decline = discord.ui.Button(label=get_msg(lang, "match_decline"), style=discord.ButtonStyle.secondary)
-        accept.callback, decline.callback = self.on_accept, self.on_decline
-        self.add_item(accept)
-        self.add_item(decline)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """도전받은 본인만 수락/거부할 수 있다.
-
-        **공개 채널에 도전장을 뿌리면 이 검사가 없을 때 아무나 누를 수 있다** — 남의 이름으로
-        수락되면서 그 사람 포인트가 판돈으로 묶인다. DM으로만 보내던 시절엔 메시지 자체가
-        본인에게만 보여서 문제가 안 됐지만, 공개 옵션이 생긴 이상 반드시 필요하다.
+        방장은 시작 버튼을 누르는 쪽이라 따로 준비를 누르지 않는다. 방장이 관전 중이면
+        두 대전자 모두 준비해야 한다.
         """
-        if interaction.user.id == self.opponent.id:
-            return True
-        await interaction.response.send_message(
-            get_msg(self.lang, "match_err_not_yours"), ephemeral=True)
-        return False
+        if self.match is not None or None in self.seats:
+            return False
+        return all(uid in self.ready for uid in self.seated_ids if uid != self.host_id)
 
-    async def on_accept(self, interaction: discord.Interaction):
-        self.answered = True
-        self.stop()
-        await interaction.response.defer()
+    @property
+    def playing(self) -> bool:
+        return self.match is not None and not self.match.finished
 
-        async with bot.pool.acquire() as conn:
-            reason = await accept_match(conn, self.match_id)
-            if reason:
-                await interaction.edit_original_response(
-                    embed=discord.Embed(description=get_msg(self.lang, f"match_err_{reason}",
-                                                            opponent=self.challenger.display_name)),
-                    view=None)
-                return
-            decks = {
-                user.id: await fetch_battle_decks(conn, user.id, self.lang)
-                for user in (self.challenger, self.opponent)
-            }
+    def is_invited(self, user_id: int) -> bool:
+        deadline = self.invited.get(user_id)
+        return deadline is not None and deadline > time.time()
 
-        challenger_side = PvpSide(self.challenger, decks[self.challenger.id])
-        opponent_side = PvpSide(self.opponent, decks[self.opponent.id])
-        match = PvpMatch(self.match_id, challenger_side, opponent_side, self.wager, self.lang)
-        match.public_message = self.public_message
-        live_matches[self.match_id] = match   # 웹이 match_id로 찾아올 수 있게 등록
+    # -- 스냅샷 -------------------------------------------------------------
+    def list_entry(self) -> dict:
+        """로비 방 목록에 실릴 요약."""
+        host = self.members.get(self.host_id)
+        return {
+            "room_id": self.room_id,
+            "name": self.name,
+            "host": host.display_name if host else "",
+            "seated": len(self.seated_ids),
+            "wager": self.wager,
+            "private": bool(self.password),
+            "people": len(self.members),
+            "playing": self.playing,
+        }
 
-        # 웹 화면 링크. 참가자에게는 **토큰이 붙은 링크**(카드 제출 가능)를 DM으로 주고,
-        # 공개 대결이면 채널에 **토큰 없는 링크**(읽기 전용 관전)를 한 번 더 뿌린다.
-        base = web_base_url()
-        for side in (challenger_side, opponent_side):
-            token = issue_match_token(self.match_id, side.user.id)
+    def seat_state(self, index: int) -> dict | None:
+        uid = self.seats[index]
+        if uid is None or uid not in self.members:
+            return None
+        return {
+            "id": str(uid),
+            "name": self.members[uid].display_name,
+            "is_host": uid == self.host_id,
+            # 방장은 준비를 누르지 않고 바로 시작하므로 항상 준비된 것으로 보여준다
+            "ready": uid == self.host_id or uid in self.ready,
+        }
+
+    def snapshot(self, viewer_id: int) -> dict:
+        """방 화면이 그릴 전체 상태. 대결이 시작되면 match 스냅샷을 통째로 품는다."""
+        notice = self.notices.pop(viewer_id, None)
+        return {
+            "type": "room",
+            "room_id": self.room_id,
+            "name": self.name,
+            "wager": self.wager,
+            "private": bool(self.password),
+            "closed": self.closed,
+            "close_reason": self.close_reason,
+            "host_id": str(self.host_id),
+            "seats": [self.seat_state(0), self.seat_state(1)],
+            "spectators": [{"id": str(uid), "name": self.members[uid].display_name,
+                            "is_host": uid == self.host_id}
+                           for uid in self.spectator_ids],
+            "me": {
+                "id": str(viewer_id),
+                "is_host": viewer_id == self.host_id,
+                "seat": self.seat_of(viewer_id),
+                "ready": viewer_id in self.ready,
+            },
+            "can_start": self.can_start,
+            "notice": notice,
+            "last_result": self.last_result,
+            "match": self.match_snapshot(viewer_id),
+        }
+
+    def match_snapshot(self, viewer_id: int) -> dict | None:
+        """진행 중인 판의 스냅샷. **관전자 수는 방 인원에서 센다.**
+
+        예전에는 매치가 스트림 연결을 직접 세었는데, 지금은 구독이 방에 붙어 있어서
+        매치는 자기 관전자가 몇 명인지 모른다. 방이 답을 갖고 있으므로 여기서 채워준다.
+        """
+        if self.match is None:
+            return None
+        snapshot = self.match.snapshot(viewer_id)
+        snapshot["spectators"] = len(self.spectator_ids)
+        return snapshot
+
+    async def broadcast(self) -> None:
+        for queue in list(self.subscribers):
             try:
-                await side.user.send(get_msg(
-                    self.lang, "match_link_player",
-                    url=f"{base}/match?id={self.match_id}&token={token}"))
-            except discord.HTTPException:
-                pass   # DM이 막혀도 디스코드 선택 메뉴로 진행할 수 있으므로 매치는 계속한다
-
-        if self.public_message is not None:
-            # 공개 대결은 도전장을 지우지 않고 **그 메시지를 '진행 중'으로 고쳐 쓴다** —
-            # 관전 링크를 새 메시지로 또 보내면 매치 하나에 메시지가 여러 개 쌓인다.
-            await edit_public_match(self.public_message, self.lang, self.challenger,
-                                    self.opponent, self.wager, state="live",
-                                    url=f"{base}/match?id={self.match_id}")
-        else:
-            # 비공개 도전장은 수락한 뒤 할 일이 없다(버튼도 죽었고 진행은 웹에서 한다).
-            # 그대로 두면 DM에 쓸모없는 메시지가 쌓이므로 지운다 — 링크는 위에서 따로 보냈다.
-            try:
-                await interaction.delete_original_response()
-            except discord.HTTPException:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
                 pass
 
-        # 덱 선택도 웹에서 한다. 제한 시간 안에 양쪽이 다 고르지 않으면 매치를 취소하고
-        # 판돈을 돌려준다 (예전에는 DeckPickView의 timeout이 이 역할을 했다).
-        match.arm(config["pvp_config"]["pick_timeout_seconds"], lambda: deck_timed_out(match))
-        await match.broadcast()
 
-    async def on_decline(self, interaction: discord.Interaction):
-        self.answered = True
-        self.stop()
-        async with bot.pool.acquire() as conn:
-            await cancel_match(conn, self.match_id)
+def room_of(user_id: int) -> "Room | None":
+    """그 사람이 지금 들어가 있는 방. 한 번에 하나만 허용한다."""
+    for room in rooms.values():
+        if not room.closed and user_id in room.members:
+            return room
+    return None
 
-        if self.public_message is not None:
-            await interaction.response.defer()
-            await edit_public_match(self.public_message, self.lang, self.challenger,
-                                    self.opponent, self.wager, state="ended",
-                                    detail=get_msg(self.lang, "match_public_declined"))
-        else:
-            await interaction.response.edit_message(
-                embed=discord.Embed(description=get_msg(self.lang, "match_declined_ok")), view=None)
+
+def online_user_ids() -> set[int]:
+    """로비와 방을 통틀어 지금 접속해 있는 사람들 (탭이 여러 개여도 한 명)."""
+    ids = {session.user_id for session in lobby_sessions}
+    for room in rooms.values():
+        if not room.closed:
+            ids |= set(room.members)
+    return ids
+
+
+def lobby_base_snapshot() -> dict:
+    """모두에게 똑같이 나가는 부분 (방 목록 + 접속자). **보는 사람과 무관하다.**
+
+    **접속자 목록에는 로비에 있는 사람만 넣고, 인원 수는 방에 있는 사람까지 합쳐 센다** —
+    목록은 "지금 부를 수 있는 사람"이고, 숫자는 "이 게임을 하고 있는 사람"이라 성격이 다르다.
+    """
+    in_lobby: dict[int, str] = {}
+    for session in lobby_sessions:
+        in_lobby.setdefault(session.user_id, session.name)
+    online = online_user_ids()
+    return {
+        "type": "lobby",
+        "online": len(online),
+        "in_rooms": len(online) - len(in_lobby),
+        "users": [{"id": str(uid), "name": name} for uid, name in in_lobby.items()],
+        "rooms": [room.list_entry() for room in rooms.values() if not room.closed],
+    }
+
+
+def lobby_invites(viewer_id: int) -> list[dict]:
+    """그 사람만 받는 부분 — 나를 부른 방들."""
+    return [
+        {"room_id": room.room_id, "name": room.name,
+         "host": room.members[room.host_id].display_name if room.host_id in room.members else "",
+         "wager": room.wager}
+        for room in rooms.values()
+        if not room.closed and room.is_invited(viewer_id) and viewer_id not in room.members
+    ]
+
+
+def lobby_snapshot(viewer_id: int) -> dict:
+    """한 사람이 받을 전체 상태 (폴링과 첫 접속용)."""
+    snapshot = lobby_base_snapshot()
+    snapshot["invites"] = lobby_invites(viewer_id)
+    snapshot["me"] = {"id": str(viewer_id)}
+    return snapshot
+
+
+# **로비 목록은 밀어주지 않는다 — 처음 들어올 때 한 번, 그 뒤로는 새로고침을 누를 때만 받는다.**
+# 방이 생기고 사라질 때마다 접속자 전원에게 전체 목록을 보내면, 스냅샷 크기 자체가 접속자 수에
+# 비례해 커져서 사실상 O(N^2)이 된다. 실측으로 200명이 붙은 상태에서 방 생성 20건이
+# 로컬 CPU 1,047ms(= Render 0.1 CPU로 약 10초)를 먹었다. 목록이 조금 늦게 보이는 건
+# 불편한 정도지만, 저 비용은 봇 전체를 멈추게 한다.
+#
+# **단, 초대만은 실시간으로 간다.** 새로고침을 눌러야 초대가 보인다면 초대 기능이 성립하지 않는다.
+# 초대는 특정 한 사람에게만 가므로 전파가 아니라 1건짜리 전송이고, 접속자 수와 무관하다.
+async def notify_invite(user_id: int, room: "Room") -> None:
+    payload = json.dumps({
+        "type": "invite",
+        "room_id": room.room_id,
+        "name": room.name,
+        "host": room.members[room.host_id].display_name if room.host_id in room.members else "",
+        "wager": room.wager,
+    }, ensure_ascii=False)
+    for session in list(lobby_sessions):
+        if session.user_id != user_id:
+            continue
         try:
-            await self.challenger.send(get_msg(self.lang, "match_declined_by_opponent",
-                                               opponent=self.opponent.display_name))
-        except discord.HTTPException:
+            session.queue.put_nowait(payload)
+        except asyncio.QueueFull:
             pass
 
-    async def on_timeout(self):
-        if self.answered:
-            return
-        # 여기서 예외가 나면 매치가 'pending'으로 남고, create_match의 중복 검사에 걸려
-        # **그 두 사람은 봇을 재시작할 때까지 새 대결을 걸 수 없다.** 그래서 정리를 먼저
-        # 끝내고, 화면 갱신 실패가 정리를 막지 않게 한다.
-        try:
-            async with bot.pool.acquire() as conn:
-                await cancel_match(conn, self.match_id)
-        except Exception:
-            traceback.print_exc()
-        # 공개 도전장은 채널에 남아 있으므로 '무산됨'으로 바꿔준다. 안 그러면 죽은 버튼이
-        # 계속 보이고, 누르면 "상호작용 실패"만 뜬다.
-        await edit_public_match(self.public_message, self.lang, self.challenger,
-                                self.opponent, self.wager, state="ended",
-                                detail=get_msg(self.lang, "match_public_expired"))
 
-async def start_match(interaction: discord.Interaction, opponent: discord.Member,
-                      wager: int | None, public: bool = False) -> None:
-    """도전장을 만들어 보낸다. `wager=None`이면 친선전(판돈 없음).
+async def close_room(room: Room, reason_key: str | None = None) -> None:
+    """방을 닫고 모두를 내보낸다. 진행 중인 대결이 있으면 먼저 정리한다."""
+    if room.closed:
+        return
+    room.closed = True
+    room.close_reason = reason_key
+    if room.match is not None and not room.match.finished:
+        await finish_match(room.match, None, reason_key="match_cancelled_error")
+    await room.broadcast()
+    rooms.pop(room.room_id, None)
 
-    `public=False`면 상대 DM으로만, `public=True`면 같은 카테고리의 공개매치 채널로 간다.
-    판돈은 모달에서 숫자 한 칸으로 받고 **0이 곧 친선전**이라 예전처럼 명령어를 둘로
-    나눌 필요가 없다 (슬래시 명령은 모드에 따라 판돈 칸을 숨길 수 없어서 나눠야 했다).
+
+async def affordable(user_ids, wager: int) -> set[int]:
+    """`wager`를 낼 수 있는 사람들. 친선전(0)이면 전원 통과 (DB도 안 본다)."""
+    user_ids = list(user_ids)
+    if wager <= 0 or not user_ids:
+        return set(user_ids)
+    async with bot.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, points FROM users WHERE user_id = ANY($1::bigint[])", user_ids)
+    return {row["user_id"] for row in rows if row["points"] >= wager}
+
+
+async def fill_seats(room: Room) -> None:
+    """빈 자리를 관전자 중에서 채운다 (들어온 순서대로).
+
+    **판돈전이면 판돈을 낼 수 있는 사람만** 올린다 — 못 내는 사람을 올려두면 방장이 시작을
+    눌러도 계속 실패해서 방이 멈춘다. 친선전은 조건이 없으므로 맨 앞 사람이 올라간다.
+    준비 버튼을 눌러야 대결이 시작되므로, 올라간 사람이 원치 않으면 그냥 안 누르면 된다.
     """
-    await interaction.response.defer(ephemeral=True)
-    lang = resolve_lang(interaction)
-    pvp_conf = config["pvp_config"]
-
-    async def fail(key: str, **kwargs):
-        await interaction.followup.send(get_msg(lang, key, **kwargs), ephemeral=True)
-
-    if opponent.bot:
-        return await fail("match_err_bot")
-    if opponent.id == interaction.user.id:
-        return await fail("match_err_self_challenge")
-    # 판돈전은 입력이 필수라 0이나 음수가 들어올 수 있다 (친선전은 None으로 들어와 이 검사를 건너뜀)
-    if wager is not None and wager < pvp_conf["min_wager"]:
-        return await fail("match_err_invalid_wager", min=pvp_conf["min_wager"])
-    wager = wager or 0
-
-    try:
-        async with bot.pool.acquire() as conn:
-            deck_size = config["deck_config"]["deck_size"]
-            if not await fetch_battle_decks(conn, interaction.user.id, lang):
-                return await fail("match_err_no_deck", size=deck_size)
-            if not await fetch_battle_decks(conn, opponent.id, lang):
-                return await fail("match_err_opponent_no_deck", opponent=opponent.display_name)
-
-            match_id, reason = await create_match(conn, interaction.user.id, opponent.id, wager)
-            if reason:
-                return await fail(f"match_err_{reason}", opponent=opponent.display_name)
-    except Exception as e:
-        print(f"⚠️ 매치 생성 중 DB 오류: {e}")
-        return await fail("match_err_generic")
-
-    invite = get_msg(lang, "match_invite_wager", challenger=interaction.user.display_name, wager=wager) \
-        if wager else get_msg(lang, "match_invite_friendly", challenger=interaction.user.display_name)
-    embed = discord.Embed(
-        title=get_msg(lang, "match_invite_title"),
-        # 수락 제한 시간도 카드 선택과 같은 방식으로 남은 초를 보여준다 (보내기 직전에 기한을 계산)
-        description=invite + "\n" + timer_line(lang, pvp_conf["invite_timeout_seconds"]),
-        color=discord.Color.orange(),
-    )
-    if wager:
-        embed.set_footer(text=get_msg(lang, "match_invite_footer", wager=wager))
-
-    # 공개 대결이면 **패널 채널이 아니라 같은 카테고리의 공개매치 채널**에 도전장을 올린다.
-    # 패널 채널에 도전장과 관전 링크가 쌓이면 버튼 패널이 위로 밀려 올라가 기능을 쓰기 어려워진다.
-    # 공개 채널에서는 아무나 버튼을 누를 수 있으므로 MatchInviteView.interaction_check가
-    # 도전받은 본인인지 반드시 확인한다 — 없으면 남의 판돈이 묶인다.
-    view = MatchInviteView(match_id, interaction.user, opponent, wager, lang)
-    channel = None
-
-    async def abort(key: str, **kwargs):
-        """도전장을 띄우지 못하면 매치를 취소해야 한다 — 안 그러면 판돈이 묶인 채 남는다."""
-        async with bot.pool.acquire() as conn:
-            await cancel_match(conn, match_id)
-        return await fail(key, **kwargs)
-
-    if public:
-        channel = public_match_channel(interaction.channel)
-        if channel is None:
-            return await abort("match_err_no_match_channel",
-                               channel=public_match_channel_name(interaction.channel) or "?")
-        embed.description = (f"{opponent.mention}\n" + embed.description)
-        try:
-            view.public_message = await channel.send(embed=embed, view=view)
-        except discord.Forbidden:
-            return await abort("match_err_channel")
-    else:
-        try:
-            await opponent.send(embed=embed, view=view)
-        except discord.Forbidden:
-            return await abort("match_err_dm_opponent", opponent=opponent.display_name)
-
-    await interaction.followup.send(
-        get_msg(lang, "match_sent_public" if public else "match_sent",
-                opponent=opponent.display_name,
-                channel=channel.mention if channel else ""), ephemeral=True)
+    if room.playing or None not in room.seats:
+        return
+    candidates = [uid for uid in room.spectator_ids if uid not in room.standing]
+    if not candidates:
+        return
+    allowed = await affordable(candidates, room.wager)
+    queue = [uid for uid in candidates if uid in allowed]
+    for index, uid in enumerate(room.seats):
+        if uid is None and queue:
+            taker = queue.pop(0)
+            room.seats[index] = taker
+            room.ready.discard(taker)
+            room.notices[taker] = {"key": "web_room_became_opponent", "vars": {}}
 
 
-# ---------------------------------------------------------------------------
+async def recheck_seats(room: Room) -> None:
+    """판돈을 더는 못 내는 대전자를 관전자로 내리고 빈 자리를 다시 채운다.
+
+    한 판이 끝나면 진 쪽 포인트가 줄어 **다음 판을 시작할 수 없는 상태**가 될 수 있다.
+    그대로 두면 방장이 시작을 눌러도 계속 실패해 방이 멈추므로, 낼 수 있는 관전자와 바꾼다.
+    방장이 자리에서 내려와도 **방장 권한은 그대로**다 (자리와 권한은 별개다).
+    """
+    if room.playing or room.wager <= 0:
+        return
+    seated = room.seated_ids
+    if not seated:
+        return
+    allowed = await affordable(seated, room.wager)
+    for index, uid in enumerate(room.seats):
+        if uid is not None and uid not in allowed:
+            room.seats[index] = None
+            room.ready.discard(uid)
+            room.notices[uid] = {"key": "web_room_demoted_poor", "vars": {"wager": room.wager}}
+    await fill_seats(room)
+
+
+async def leave_room(room: Room, user_id: int) -> None:
+    """방에서 한 사람을 뺀다. 방장/상대가 빠지면 자리를 메운다.
+
+    **대결 중 이탈은 대결을 끊지 않는다** — 덱을 고르기 전이면 무효 + 판돈 반환이고,
+    덱을 고른 뒤에는 남은 카드가 자동으로 나가면서 그대로 끝까지 진행된다(round_timed_out).
+    창을 닫아 판돈을 피하는 걸 막으려면 진행을 계속시키는 쪽이 맞다.
+    """
+    if user_id not in room.members:
+        return
+    was_player = user_id in room.seats
+    room.members.pop(user_id, None)
+    room.ready.discard(user_id)
+    room.standing.discard(user_id)
+    seat = room.seat_of(user_id)
+    if seat is not None:
+        room.seats[seat] = None
+
+    if room.playing and was_player and room.match.round_no == 0:
+        # 아직 덱을 아무도 안 골랐다 — 여기서 끊어야 판돈이 묶인 채 남지 않는다
+        await finish_match(room.match, None, reason_key="match_cancelled_timeout")
+
+    if not room.members:
+        await close_room(room)
+        return
+
+    if user_id == room.host_id:
+        # 방장 승계: 남은 대전자 -> 없으면 가장 먼저 들어온 사람
+        remaining = room.seated_ids
+        room.host_id = remaining[0] if remaining else next(iter(room.members))
+        room.ready.discard(room.host_id)      # 방장은 준비를 누르지 않는다
+        room.notices[room.host_id] = {"key": "web_room_became_host", "vars": {}}
+
+    if not room.playing:
+        await fill_seats(room)
+    await room.broadcast()
+
+
 # 오락실 패널 — 슬래시 명령 대신 채널에 고정된 버튼 메시지로 모든 기능을 연다.
 # 통합관리봇의 음성채널 생성 패널과 같은 방식: 봇이 켜질 때 기존 메시지를 지우고 새로 올린다.
 # ---------------------------------------------------------------------------
@@ -2209,7 +2832,7 @@ class ArcadePanelView(discord.ui.View):
             (0, "panel_summon", discord.ButtonStyle.primary, self.on_summon),
             (0, "panel_summon_multi", discord.ButtonStyle.primary, self.on_summon_multi),
             (1, "panel_deck", discord.ButtonStyle.secondary, self.on_deck),
-            (1, "panel_match", discord.ButtonStyle.danger, self.on_match),
+            (1, "panel_arcade", discord.ButtonStyle.danger, self.on_arcade),
             (1, "panel_points", discord.ButtonStyle.secondary, self.on_points),
         ):
             label = get_msg(lang, key, count=config["summon_config"]["multi_count"])                 if key == "panel_summon_multi" else get_msg(lang, key)
@@ -2235,97 +2858,8 @@ class ArcadePanelView(discord.ui.View):
         conf = config["summon_config"]
         await summon_and_reply(interaction, conf["multi_count"], conf["cost_multi"])
 
-    async def on_match(self, interaction: discord.Interaction):
-        # 상대를 고르는 화면을 먼저 띄운다. 판돈은 상대를 고른 뒤 모달로 받는다 —
-        # 모달은 인터랙션의 **첫 응답**으로만 열 수 있어서 버튼 -> 모달 -> 상대선택 순서가 불가능하다.
-        lang = resolve_lang(interaction)
-        await interaction.response.send_message(
-            get_msg(lang, "panel_match_pick_opponent"),
-            view=MatchOpponentView(lang), ephemeral=True)
-
-
-class MatchOpponentView(discord.ui.View):
-    """대결 상대를 고르는 ephemeral 화면 (고른 뒤 판돈 모달이 열린다)."""
-
-    def __init__(self, lang: str):
-        super().__init__(timeout=120)
-        self.lang = lang
-        self.select = discord.ui.UserSelect(placeholder=get_msg(lang, "panel_match_pick_opponent"),
-                                            min_values=1, max_values=1)
-        self.select.callback = self.on_pick
-        self.add_item(self.select)
-
-    async def on_pick(self, interaction: discord.Interaction):
-        # **`guild.get_member()`로 상대를 찾지 말 것.** members 인텐트는 특권 인텐트라 꺼져 있고
-        # (`Intents.default()`), 그러면 멤버 캐시에는 음성 채널에 들어온 사람만 들어온다
-        # (`MemberCacheFlags.from_intents` -> joined=False/voice=True). 그래서 상대를 골라도
-        # 대부분 None이 나와 "An error occurred"만 뜨고 대결이 시작되지 않았다.
-        # `UserSelect.values`는 인터랙션 payload의 resolved에서 바로 만들어져 캐시가 필요 없고,
-        # 길드 안에서는 항상 Member로 온다 (discord.py 2.7.1 소스로 확인).
-        opponent = self.select.values[0]
-        # 상대 선택은 새 인터랙션이라 여기서 모달을 여는 건 첫 응답 -> 허용된다
-        await interaction.response.send_modal(MatchWagerModal(self.lang, opponent))
-
-
-class MatchWagerModal(discord.ui.Modal):
-    """판돈 입력. 0을 넣으면 친선전(포인트 이동 없음)이 된다."""
-
-    def __init__(self, lang: str, opponent: discord.Member):
-        super().__init__(title=get_msg(lang, "panel_match_modal_title"))
-        self.lang, self.opponent = lang, opponent
-        self.wager = discord.ui.TextInput(
-            label=get_msg(lang, "panel_match_wager_label"),
-            placeholder=get_msg(lang, "panel_match_wager_hint"),
-            default="0", required=True, max_length=9)
-        self.add_item(self.wager)
-        self.public = discord.ui.TextInput(
-            label=get_msg(lang, "panel_match_public_label"),
-            placeholder=get_msg(lang, "panel_match_public_hint"),
-            default="N", required=False, max_length=4)
-        self.add_item(self.public)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raw = self.wager.value.strip().replace(",", "")
-        if not raw.isdigit():
-            return await interaction.response.send_message(
-                get_msg(self.lang, "panel_match_wager_invalid"), ephemeral=True)
-        wager = int(raw)
-        public = self.public.value.strip().upper() in ("Y", "YES", "O", "공개", "T", "TRUE")
-        # 판돈 0은 친선전과 같은 뜻이다 — start_match는 None을 친선전으로 보므로 변환해서 넘긴다
-        await start_match(interaction, self.opponent, wager or None, public)
-
-
-async def close_stale_public_matches(channel, lang: str, limit: int = 50) -> int:
-    """봇이 켜질 때, 채널에 남아 있는 옛 공개 매치 메시지를 '종료'로 닫는다.
-
-    매치 진행 상태는 메모리에만 있어서 재시작하면 사라진다 (판돈은 refund_stale_matches가
-    반환한다). 그런데 **채널 메시지는 그대로 남아** 계속 '진행 중'으로 보이고, 이미 죽은 관전
-    링크와 눌러도 "상호작용 실패"만 뜨는 수락 버튼이 남는다. Render 무료 플랜은 스핀다운으로
-    재시작이 잦아서 이 정리가 없으면 채널이 유령 매치로 뒤덮인다.
-    """
-    stale = {get_msg(lang, "match_invite_title"), get_msg(lang, "match_public_live_title")}
-    closed = 0
-    async for message in channel.history(limit=limit):
-        if message.author != bot.user or not message.embeds:
-            continue
-        embed = message.embeds[0]
-        if embed.title not in stale:
-            continue
-        # 대전 링크(죽었다)·남은 시간 표시(지났다)·멘션은 빼고, 누가 붙었는지만 남긴다
-        lines = [line for line in (embed.description or "").split("\n")
-                 if line and "/match?id=" not in line and "<t:" not in line
-                 and not line.startswith("<@")]
-        lines.append(get_msg(lang, "match_public_restarted"))
-        try:
-            await message.edit(
-                embed=discord.Embed(title=get_msg(lang, "match_public_ended_title"),
-                                    description="\n".join(lines),
-                                    color=discord.Color.dark_grey()),
-                view=None)
-            closed += 1
-        except discord.HTTPException:
-            pass
-    return closed
+    async def on_arcade(self, interaction: discord.Interaction):
+        await do_arcade(interaction)
 
 
 async def setup_arcade_panel(guild: discord.Guild) -> int:
@@ -2356,16 +2890,6 @@ async def setup_arcade_panel(guild: discord.Guild) -> int:
         except discord.HTTPException as e:
             print(f"⚠️ 오락실 패널 게시 실패 ({guild.name} / {channel.name}): {e}")
 
-        # 공개 매치 채널에 남은 옛 매치도 같이 닫아준다 (재시작 때 메모리 상태가 날아갔으므로)
-        match_channel = discord.utils.get(category.text_channels,
-                                          name=conf.get("match_channel", ""))
-        if match_channel is not None:
-            try:
-                stale = await close_stale_public_matches(match_channel, lang)
-                if stale:
-                    print(f"🧹 재시작 전 공개 매치 {stale}건을 종료로 정리 ({match_channel.name})")
-            except discord.HTTPException as e:
-                print(f"⚠️ 공개 매치 정리 실패 ({guild.name} / {match_channel.name}): {e}")
     return posted
 
 
