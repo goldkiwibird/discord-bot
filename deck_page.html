@@ -133,12 +133,11 @@
      오른쪽 위는 선택 번호(.pick)가 쓰므로 왼쪽 아래에 둔다. */
   .alsomsg { position: absolute; bottom: 6px; left: 6px; font-size: 10px; background: rgba(0,0,0,.72);
              padding: 3px 6px; border-radius: 4px; color: var(--SR); }
+  /* 카드 안(프레임 이름칸)에 이미 이름이 있으므로 아래에 다시 적지 않는다.
+     그래서 이 칸은 **강화한 카드의 초기화 버튼이 있을 때만** 생긴다 — 늘 붙이면
+     강화 안 한 카드 밑에 빈 여백만 남는다. */
   .info { padding: 8px; }
-  /* 카드 위에도 이름이 있지만(프레임 이름칸) 150px 카드에서는 8px 남짓이라, 수십 장을 훑는
-     이 화면에서는 읽을 수 있는 크기로 한 번 더 적는다. */
-  .name { font-size: 13px; font-weight: 600;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .reset-btn { margin-top: 8px; width: 100%; padding: 5px 0; border-radius: 6px; border: 1px solid var(--line);
+  .reset-btn { width: 100%; padding: 5px 0; border-radius: 6px; border: 1px solid var(--line);
                background: transparent; color: var(--bad); font-size: 11px; cursor: pointer; }
   .reset-btn:hover { background: var(--bad); color: #fff; border-color: var(--bad); }
   .empty { padding: 40px 16px; text-align: center; color: var(--dim); }
@@ -445,11 +444,9 @@ function render() {
       ${cardArt(card, card.bonus)}
       ${alsoIn.length ? `<span class="alsomsg">${msg("web_in_other_deck", { number: alsoIn.join(", ") })}</span>` : ""}
       <span class="pick">${selected.indexOf(card.hero_id) + 1}</span>
-      <div class="info">
-        <div class="name">${escapeHtml(card.name)}</div>
-        ${card.enhance_count > 0
-          ? `<button type="button" class="reset-btn">${data.messages.web_reset_enhance}</button>` : ""}
-      </div>`;
+      ${card.enhance_count > 0
+        ? `<div class="info"><button type="button" class="reset-btn">${data.messages.web_reset_enhance}</button></div>`
+        : ""}`;
 
     el.onclick = () => toggle(card.hero_id);
     const resetBtn = el.querySelector(".reset-btn");
