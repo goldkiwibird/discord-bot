@@ -30,11 +30,11 @@
             color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
   .create:hover { filter: brightness(1.1); }
   /* 목록은 자동으로 갱신되지 않는다 (아래 connect() 주석 참고) — 이 버튼이 유일한 갱신 수단이다. */
-  .refresh { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
-             background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
+  .refresh { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--ok);
+             background: transparent; color: var(--ok); font-size: 13px; cursor: pointer;
              font-family: inherit; }
-  .refresh:hover:not(:disabled) { border-color: var(--view); color: var(--view); }
-  .refresh:disabled { opacity: .45; cursor: default; }
+  .refresh:hover:not(:disabled) { background: var(--ok); color: #10121a; }
+  .refresh:disabled { opacity: .4; cursor: default; }
   .stamp { font-size: 11px; color: var(--dim); }
 
   /* 필터 한 줄. 좁은 화면에서는 알아서 감긴다. */
@@ -477,6 +477,12 @@ function connect() {
     if (payload.kicked === "idle") {
       source.close();
       fullScreenNotice(msg("web_lobby_idle_kicked", { minutes: data.idle_minutes }));
+      return;
+    }
+    if (payload.kicked === "elsewhere") {
+      // 한 사람당 창 하나만 유지한다 — 새 창이 붙으면 이 창을 끊는다
+      source.close();
+      fullScreenNotice(data.messages.web_lobby_kicked_elsewhere);
       return;
     }
     if (payload.type === "invite") {
