@@ -1501,10 +1501,11 @@ async def handle_room_stream(request):
     })
     await response.prepare(request)
 
-    # 같은 사람의 옛 창을 먼저 끊는다 (탭 하나만 유지)
-    close_other_streams(viewer_id)
+    # 같은 사람의 **다른 페이지** 연결만 끊는다 (같은 페이지의 재연결은 그냥 교체)
+    cid = client_id(request)
+    close_other_streams(viewer_id, cid)
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
-    live_streams[viewer_id] = queue
+    live_streams[viewer_id] = (cid, queue)
     room.subscribers.add(queue)
     room.viewers[viewer_id] = room.viewers.get(viewer_id, 0) + 1
     if room.match is not None:
@@ -1546,7 +1547,7 @@ async def handle_room_stream(request):
         room.subscribers.discard(queue)
         if room.match is not None:
             room.match.subscribers.discard(queue)
-        if live_streams.get(viewer_id) is queue:
+        if (live_streams.get(viewer_id) or (None, None))[1] is queue:
             live_streams.pop(viewer_id, None)
         room.viewers[viewer_id] = max(0, room.viewers.get(viewer_id, 1) - 1)
         if not room.viewers[viewer_id]:
@@ -1584,10 +1585,11 @@ async def handle_lobby_stream(request):
     })
     await response.prepare(request)
 
-    close_other_streams(viewer_id)
+    cid = client_id(request)
+    close_other_streams(viewer_id, cid)
     session = LobbySession(viewer_id, entry["name"], entry["lang"])
     lobby_sessions.add(session)
-    live_streams[viewer_id] = session.queue
+    live_streams[viewer_id] = (cid, session.queue)
 
     heartbeat = config["pvp_config"].get("stream_heartbeat_seconds", 15)
     idle_limit = conf["idle_timeout_seconds"]
@@ -1620,7 +1622,7 @@ async def handle_lobby_stream(request):
         pass
     finally:
         lobby_sessions.discard(session)
-        if live_streams.get(viewer_id) is session.queue:
+        if (live_streams.get(viewer_id) or (None, None))[1] is session.queue:
             live_streams.pop(viewer_id, None)
     return response
 
@@ -2570,14 +2572,28 @@ def resolve_lobby_token(request) -> dict | None:
 # **한 사람당 창 하나만 유지한다.** 탭마다 스트림과 대기열이 생기면 접속자 수와 메모리가
 # 사람 수보다 부풀고, 어느 탭이 진짜인지도 알 수 없다. 새 창이 붙으면 옛 창을 끊는다
 # (새 창을 막는 쪽이 아니라 — 옛 창은 이미 닫힌 좀비일 수 있다).
-live_streams: dict[int, asyncio.Queue] = {}   # user_id -> 지금 살아 있는 스트림의 대기열
+#
+# **user_id만으로는 '다른 창'과 '같은 창의 재연결'을 구분할 수 없다.** SSE는 끊기면 브라우저가
+# 알아서 다시 붙는데(프록시가 장시간 연결을 끊는 환경에서는 흔하다), 그걸 새 창으로 오해해서
+# **창을 하나만 열었는데도 "다른 창에서 접속했습니다"가 떴다.** 그래서 페이지를 열 때 만든
+# id(`cid`)를 같이 받아 **id가 다를 때만** 끊는다 — 같은 페이지가 다시 붙는 것은 그냥 교체한다.
+live_streams: dict[int, tuple[str, asyncio.Queue]] = {}   # user_id -> (페이지 id, 대기열)
 _KICK = object()                              # 대기열에 넣으면 "끊어라"라는 뜻
 
 
-def close_other_streams(user_id: int) -> None:
-    queue = live_streams.pop(user_id, None)
-    if queue is None:
+def client_id(request) -> str:
+    return request.query.get("cid", "")
+
+
+def close_other_streams(user_id: int, cid: str) -> None:
+    """같은 사람의 **다른 페이지** 연결만 끊는다. 같은 페이지의 재연결이면 조용히 넘어간다."""
+    entry = live_streams.get(user_id)
+    if entry is None:
         return
+    old_cid, queue = entry
+    live_streams.pop(user_id, None)
+    if old_cid == cid:
+        return                      # 같은 페이지가 다시 붙은 것 — 안내를 띄우면 안 된다
     try:
         queue.put_nowait(_KICK)
     except asyncio.QueueFull:
