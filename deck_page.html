@@ -32,6 +32,9 @@
          color: var(--text); cursor: pointer; font-size: 14px; }
   .tab.active { background: var(--accent); border-color: var(--accent); }
 
+  /* 두 이력 화면 맨 위의 보관 상한 안내. 이게 없으면 옛 기록이 사라진 걸 버그로 오해한다. */
+  .keepnote { font-size: 12px; color: var(--dim); }
+
   /* PVP 전적 */
   .history { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
   .match { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line);
@@ -104,9 +107,11 @@
   .art > * { position: absolute; }
   .art .frame { inset: 0; width: 100%; height: 100%; }
   .art .portrait { left: 7.81%; top: 11.72%; width: 84.18%; height: 50.65%; object-fit: contain; }
-  .art .icon { top: 18.36%; transform: translate(-50%, -50%); }
-  .art .job { left: 84.77%; width: 12.30%; }
-  .art .elem { left: 15.23%; width: 14.65%; }
+  /* 두 아이콘은 원본이 똑같은 75x75라 **크기를 한 곳에서 같이 정한다** — 따로 적어두면
+     한쪽만 고쳐져 직업 아이콘만 작아 보인다(실제로 12.30% vs 14.65%로 벌어져 있었다). */
+  .art .icon { top: 18.36%; width: 14.65%; transform: translate(-50%, -50%); }
+  .art .job { left: 84.77%; }
+  .art .elem { left: 15.23%; }
   .art .cname { left: 9.77%; top: 5.73%; width: 80.47%; height: 4.56%;
                 display: flex; align-items: center; justify-content: center;
                 font-size: 5.4cqw; font-weight: 700; color: #fff; overflow: hidden; line-height: 1;
@@ -239,11 +244,16 @@ async function loadHistory() {
   renderHistory();
 }
 
+// 두 이력 화면 맨 위에 붙는 보관 상한 안내 (기록이 없을 때도 붙인다 — 왜 비었는지가 같이 설명된다)
+function keepNote(count) {
+  return `<div class="keepnote">${msg("web_keep_note", { count })}</div>`;
+}
+
 function renderHistory() {
   const box = $("history");
-  box.innerHTML = "";
+  box.innerHTML = keepNote(data.history_keep);
   if (!history.length) {
-    box.innerHTML = `<div class="empty">${data.messages.web_history_empty}</div>`;
+    box.innerHTML += `<div class="empty">${data.messages.web_history_empty}</div>`;
     return;
   }
   const labels = {
@@ -285,9 +295,9 @@ async function loadSummons() {
 
 function renderSummons() {
   const box = $("summons");
-  box.innerHTML = "";
+  box.innerHTML = keepNote(data.summons_keep);
   if (!summons.length) {
-    box.innerHTML = `<div class="empty">${data.messages.web_summons_empty}</div>`;
+    box.innerHTML += `<div class="empty">${data.messages.web_summons_empty}</div>`;
     return;
   }
   const tags = {
