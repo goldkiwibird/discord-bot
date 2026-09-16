@@ -1508,15 +1508,23 @@ async def do_deck(interaction: discord.Interaction):
         return
 
     token = issue_deck_token(interaction.user.id, lang)
-    url = f"{web_base_url()}/deck?token={token}"
     minutes = config["web_config"]["token_ttl_seconds"] // 60
 
     embed = discord.Embed(
         title=get_msg(lang, "deck_link_title"),
-        description=f"{get_msg(lang, 'deck_link_desc', minutes=minutes)}\n\n{url}",
+        description=get_msg(lang, "deck_link_desc", minutes=minutes),
         color=discord.Color.blurple(),
     )
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    # 소환 결과와 같은 방식으로 링크 버튼을 단다 — 주소를 본문에 그대로 적으면 토큰이 붙은 긴
+    # URL이 노출된다. 링크 전용 View는 custom_id가 없어 discord.py의 view store에 남지 않으므로
+    # timeout=None을 줘도 메모리에 쌓이지 않는다 (2.7.1 소스로 확인).
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.link,
+        label=get_msg(lang, "deck_link_button"),
+        url=f"{web_base_url()}/deck?token={token}",
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 # --- PVP 진행 ---------------------------------------------------------------
 # 매치 진행 상태는 메모리에만 둔다. 봇이 재시작되면 버튼(View)이 어차피 죽어서 이어갈 수 없고,
