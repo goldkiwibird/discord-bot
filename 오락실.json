@@ -76,7 +76,8 @@
     "round_pick_timeout_seconds": 15,
     "max_spectators": 50,
     "stream_heartbeat_seconds": 15,
-    "round_reveal_pause_seconds": 4
+    "round_reveal_pause_seconds": 4,
+    "history_keep_per_user": 20
   },
   "web_config": {
     "base_url": "",
@@ -336,7 +337,8 @@
       "match_public_expired": "⌛ Nobody accepted in time — the challenge expired.",
       "match_public_restarted": "⚠️ The bot restarted, so this match was stopped. Wagers have been refunded.",
       "web_match_element_bonus": "Element bonus +{bonus}",
-      "deck_link_button": "Open Deck Builder"
+      "deck_link_button": "Open Deck Builder",
+      "web_keep_note": "Only the most recent {count} entries are kept."
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -515,7 +517,8 @@
       "match_public_expired": "⌛ 시간 안에 수락되지 않아 무산되었습니다.",
       "match_public_restarted": "⚠️ 봇이 재시작되어 이 매치는 중단되었습니다. 판돈은 반환되었습니다.",
       "web_match_element_bonus": "속성 보너스 +{bonus}",
-      "deck_link_button": "덱 편성하기"
+      "deck_link_button": "덱 편성하기",
+      "web_keep_note": "최근 {count}건만 보관됩니다."
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -694,7 +697,8 @@
       "match_public_expired": "⌛ 時間內未被接受，戰帖已失效。",
       "match_public_restarted": "⚠️ 機器人重新啟動，本場對戰已中止。賭注已退還。",
       "web_match_element_bonus": "屬性加成 +{bonus}",
-      "deck_link_button": "開啟牌組設定"
+      "deck_link_button": "開啟牌組設定",
+      "web_keep_note": "僅保留最近 {count} 筆紀錄。"
     }
   },
   "panel_config": {
