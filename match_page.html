@@ -423,6 +423,11 @@ const params = new URLSearchParams(location.search);
 // **id는 이제 매치 번호가 아니라 방 번호다.** 대기실과 대결이 같은 페이지라 주소가 바뀌지 않는다.
 const roomId = params.get("id");
 const token = params.get("token") || "";
+// **이 페이지의 id.** 새로고침하거나 창을 새로 열면 달라진다. 서버는 이걸로
+// '같은 페이지의 재연결'과 '다른 창'을 구분한다 — 구분이 없으면 프록시가 연결을 끊고
+// 브라우저가 자동으로 다시 붙을 때마다 "다른 창에서 접속했습니다"가 뜬다.
+const CID = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+
 const $ = (id) => document.getElementById(id);
 // 에셋 확장자는 서버 설정을 따른다 (PNG -> WebP 전환을 설정 한 줄로 되돌릴 수 있게)
 let EXT = ".webp";
@@ -996,7 +1001,8 @@ function startPolling() {
 }
 
 function connect() {
-  const source = new EventSource(`/api/match/stream?id=${roomId}&token=${encodeURIComponent(token)}`);
+  const source = new EventSource(
+    `/api/match/stream?id=${roomId}&token=${encodeURIComponent(token)}&cid=${CID}`);
   let got = false;
   source.onmessage = (e) => { got = true; setLive(true); route(JSON.parse(e.data)); };
   source.onerror = () => {
