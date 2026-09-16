@@ -279,11 +279,93 @@
   .timer { font-size: 13px; color: var(--gold); font-variant-numeric: tabular-nums; }
   .wager { font-size: 13px; color: var(--gold); }
   .status { font-size: 12px; color: var(--dim); }
+
+  /* ── 대기실 ─────────────────────────────────
+     대결이 시작되기 전까지 보드를 덮는다. 시작하면 사라지고 그 아래 판이 드러난다. */
+  .waitroom { position: absolute; inset: 0; background: var(--bg); display: flex;
+              flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+              padding: 24px; text-align: center; z-index: 5; }
+  .waitroom h2 { margin: 0; font-size: 20px; color: var(--dim); font-weight: 600; }
+  .seats { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; justify-content: center; }
+  .seat { min-width: 200px; background: var(--panel); border: 2px solid var(--line);
+          border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column;
+          align-items: center; gap: 8px; }
+  /* 자리 색은 **왼쪽/오른쪽으로 고정**한다 — 방장은 자리와 무관하게 배지로 표시한다
+     (방장도 관전으로 물러날 수 있어서 자리 색으로 방장을 나타낼 수 없다). */
+  .seat.s0 { border-color: var(--me); }
+  .seat.s1 { border-color: var(--them); }
+  .seat.empty { border-style: dashed; border-color: var(--line); color: var(--dim); }
+  .seat .role { font-size: 12px; color: var(--dim); }
+  .seat .who { font-size: 22px; font-weight: 700; }
+  .seat.s0 .who { color: var(--me); }
+  .seat.s1 .who { color: var(--them); }
+  .seat .crown { font-size: 11px; color: var(--gold); }
+  .seat .sit { font-size: 12px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
+               background: transparent; border: 1px solid var(--ok); color: var(--ok);
+               font-family: inherit; }
+  .specs .crown { color: var(--gold); }
+  .seat .badge { font-size: 12px; padding: 2px 10px; border-radius: 10px;
+                 border: 1px solid var(--ok); color: var(--ok); }
+  .seat .kick { font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+                background: transparent; border: 1px solid var(--bad); color: var(--bad); }
+  .vsmark { font-size: 26px; font-weight: 800; color: var(--dim); }
+  .specs { font-size: 13px; color: var(--dim); max-width: 520px; }
+  .specs .name { color: var(--text); }
+  .specs .kick { margin-left: 4px; font-size: 10px; padding: 1px 6px; border-radius: 5px;
+                 background: transparent; border: 1px solid var(--bad); color: var(--bad);
+                 cursor: pointer; }
+  .bigbtn { padding: 12px 34px; border-radius: 10px; border: none; font-size: 17px;
+            font-weight: 700; cursor: pointer; background: var(--ok); color: #10121a; }
+  .bigbtn.off { background: var(--line); color: var(--dim); cursor: not-allowed; }
+  .bigbtn.ready { background: var(--me); color: #fff; }
+  .waithint { font-size: 13px; color: var(--dim); }
+
+  /* 방 조작 (우측 패널 아래쪽) */
+  .roomctl { display: flex; flex-direction: column; gap: 8px; }
+  .roomctl button { padding: 7px 0; border-radius: 7px; border: 1px solid var(--line);
+                    background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
+                    font-family: inherit; }
+  .roomctl button:hover { border-color: var(--me); color: var(--me); }
+  .roomctl button.leave:hover { border-color: var(--bad); color: var(--bad); }
+  .roomname { font-size: 13px; font-weight: 600; }
+
+  /* 겹쳐 뜨는 창 (초대 / 확인) */
+  .veil { position: fixed; inset: 0; background: rgba(8,9,13,.72); display: flex;
+          align-items: center; justify-content: center; padding: 20px; z-index: 40; }
+  .dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+            padding: 18px; width: min(360px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  .dialog h3 { margin: 0; font-size: 16px; }
+  .dialog .list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .dialog .list button { padding: 8px; border-radius: 7px; border: 1px solid var(--line);
+                         background: transparent; color: var(--text); cursor: pointer;
+                         font-size: 13px; font-family: inherit; text-align: left; }
+  .dialog .list button:hover { border-color: var(--me); }
+  .dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .dialog .row button { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+                        background: transparent; color: var(--text); font-size: 14px;
+                        cursor: pointer; font-family: inherit; }
+  .dialog .row button.primary { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 10px 16px; font-size: 13px; z-index: 50; }
+  .toast.bad { border-color: var(--bad); color: var(--bad); }
 </style>
 </head>
 <body>
 <div id="app">
   <div class="board" id="board">
+    <div class="waitroom" id="waitroom" hidden>
+      <h2 id="waitTitle"></h2>
+      <div class="seats">
+        <div class="seat" id="seat0"></div>
+        <div class="vsmark">VS</div>
+        <div class="seat" id="seat1"></div>
+      </div>
+      <div class="specs" id="waitSpecs"></div>
+      <div class="waithint" id="waitLast"></div>
+      <button class="bigbtn" id="actionBtn" hidden></button>
+      <div class="waithint" id="waitHint"></div>
+    </div>
     <div class="stage" id="stage"><div class="hint" id="hint"></div></div>
     <div class="rail them">
       <div class="hand them" id="themHand"></div>
@@ -305,13 +387,22 @@
       <h2>관전</h2>
       <div class="spec"><span class="dot" id="dot"></span><span id="specCount">—</span></div>
     </div>
+    <div>
+      <div class="roomname" id="roomName"></div>
+    </div>
+    <div class="roomctl">
+      <button id="standBtn" hidden></button>
+      <button id="inviteBtn"></button>
+      <button class="leave" id="leaveBtn"></button>
+    </div>
     <div class="status" id="status"></div>
   </aside>
 </div>
 
 <script>
 const params = new URLSearchParams(location.search);
-const matchId = params.get("id");
+// **id는 이제 매치 번호가 아니라 방 번호다.** 대기실과 대결이 같은 페이지라 주소가 바뀌지 않는다.
+const roomId = params.get("id");
 const token = params.get("token") || "";
 const $ = (id) => document.getElementById(id);
 // 에셋 확장자는 서버 설정을 따른다 (PNG -> WebP 전환을 설정 한 줄로 되돌릴 수 있게)
@@ -436,7 +527,7 @@ function renderDeckPick(s) {
 
 async function chooseDeck(number, el) {
   el.classList.add("picked");
-  const res = await fetch(`/api/match/deck?id=${matchId}&token=${encodeURIComponent(token)}`, {
+  const res = await fetch(`/api/match/deck?id=${roomId}&token=${encodeURIComponent(token)}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ deck_number: number }),
   });
@@ -591,7 +682,7 @@ setInterval(() => {
 async function pick(heroId, el) {
   el.classList.add("gone");
   timerEnd = 0;
-  const res = await fetch(`/api/match/pick?id=${matchId}&token=${encodeURIComponent(token)}`, {
+  const res = await fetch(`/api/match/pick?id=${roomId}&token=${encodeURIComponent(token)}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ hero_id: heroId }),
   });
@@ -621,6 +712,198 @@ function preload(snapshot) {
   }
 }
 
+// ── 방(대기실) ────────────────────────────────────────────────
+let room = null;
+let lastNotice = null;
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function toast(text, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+function goLobby() { location.href = `/lobby?token=${encodeURIComponent(token)}`; }
+
+async function roomPost(path, body) {
+  const res = await fetch(`/api/room/${path}?id=${roomId}&token=${encodeURIComponent(token)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) toast(msg("web_room_" + data.error) || data.error || "error", "bad");
+  return res.ok ? data : null;
+}
+
+function renderSeat(index) {
+  const el = $("seat" + index);
+  const who = room.seats[index];
+  const playing = room.match && !room.match.finished;
+  el.className = "seat s" + index + (who ? "" : " empty");
+
+  if (!who) {
+    // 빈 자리에는 관전자가 직접 앉을 수 있다 (자리가 비는 즉시 자동으로도 채워진다)
+    const canSit = room.me.seat === null && !playing;
+    el.innerHTML =
+      `<span class="role">${escapeHtml(msg("web_room_seat"))}</span>
+       <span class="who">${escapeHtml(msg("web_room_empty_slot"))}</span>
+       ${canSit ? `<button class="sit">${escapeHtml(msg("web_room_sit"))}</button>` : ""}`;
+    const sit = el.querySelector(".sit");
+    if (sit) sit.onclick = () => roomPost("seat", { sit: true });
+    return;
+  }
+
+  // **대결 중에는 대전자를 못 내보낸다** — 지고 있을 때 판을 엎는 데 쓰일 수 있다.
+  const canKick = room.me.is_host && who.id !== room.me.id && !playing;
+  el.innerHTML =
+    `<span class="role">${escapeHtml(msg("web_room_seat"))}</span>
+     <span class="who">${escapeHtml(who.name)}</span>
+     ${who.is_host ? `<span class="crown">${escapeHtml(msg("web_room_host_badge"))}</span>` : ""}
+     ${who.ready ? `<span class="badge">${escapeHtml(msg("web_room_ready_done"))}</span>` : ""}
+     ${canKick ? `<button class="kick">${escapeHtml(msg("web_room_kick"))}</button>` : ""}`;
+  const kick = el.querySelector(".kick");
+  if (kick) kick.onclick = () => confirmKick(who);
+}
+
+function renderRoom() {
+  $("roomName").textContent = room.name;
+  $("inviteBtn").textContent = msg("web_room_invite");
+  $("leaveBtn").textContent = msg("web_room_leave");
+
+  const playing = room.match && !room.match.finished;
+  renderSeat(0);
+  renderSeat(1);
+
+  // 관전자: 방장에게는 이름마다 내보내기 버튼이 붙는다 (대결 중에도 가능)
+  const specs = room.spectators || [];
+  $("waitSpecs").innerHTML = specs.length
+    ? `${escapeHtml(msg("web_room_spectators"))} · ` + specs.map((s, i) =>
+        `<span class="name">${escapeHtml(s.name)}</span>` +
+        (s.is_host ? `<span class="crown">${escapeHtml(msg("web_room_host_badge"))}</span>` : "") +
+        (room.me.is_host && s.id !== room.me.id
+          ? `<button class="kick" data-spec="${i}">${escapeHtml(msg("web_room_kick"))}</button>` : "")
+      ).join(", ")
+    : escapeHtml(msg("web_room_spectators_empty"));
+  for (const button of $("waitSpecs").querySelectorAll("[data-spec]")) {
+    button.onclick = () => confirmKick(specs[Number(button.dataset.spec)]);
+  }
+
+  // 지난 판 결과는 대기실에 한 줄로 남는다 (결과 화면은 잠깐 뒤 대기실로 돌아간다)
+  $("waitLast").textContent = room.last_result
+    ? msg("web_room_last", { text: msg(room.last_result.key, room.last_result.vars) })
+    : "";
+
+  const action = $("actionBtn");
+  const hint = $("waitHint");
+  action.hidden = true;
+  hint.textContent = "";
+  const full = room.seats[0] && room.seats[1];
+  $("waitTitle").textContent = msg(full ? "web_room_ready_title" : "web_room_waiting_title");
+
+  if (room.me.is_host) {
+    action.hidden = false;
+    action.textContent = msg("web_room_start");
+    action.className = "bigbtn" + (room.can_start ? "" : " off");
+    action.disabled = !room.can_start;
+    action.onclick = room.can_start ? () => roomPost("start") : null;
+    if (!room.can_start) hint.textContent = msg(full ? "web_room_ready_all" : "web_room_start_hint");
+  } else if (room.me.seat !== null) {
+    action.hidden = false;
+    action.textContent = msg(room.me.ready ? "web_room_unready" : "web_room_ready");
+    action.className = "bigbtn" + (room.me.ready ? " ready" : "");
+    action.disabled = false;
+    action.onclick = () => roomPost("ready", { ready: !room.me.ready });
+    if (room.me.ready) hint.textContent = msg("web_room_start_wait");
+  } else {
+    hint.textContent = msg("web_room_start_wait");
+  }
+
+  // 대전자는 언제든 관전으로 물러날 수 있다 (대결 중에는 서버가 막는다)
+  $("standBtn").hidden = room.me.seat === null || playing;
+  $("standBtn").textContent = msg("web_room_stand");
+}
+
+function confirmKick(who) {
+  openDialog({
+    title: msg("web_room_kick_confirm", { name: who.name }),
+    body: "",
+    confirm: msg("web_room_kick"),
+    onConfirm: () => { roomPost("kick", { user_id: who.id }); closeDialog(); },
+  });
+}
+
+async function openInvite() {
+  const res = await fetch(`/api/room/invitable?id=${roomId}&token=${encodeURIComponent(token)}`);
+  const lobby = res.ok ? await res.json() : { users: [] };
+  const people = lobby.users || [];
+  openDialog({
+    title: msg("web_room_invite_title"),
+    body: people.length
+      ? `<div class="list">${people.map((u, i) =>
+          `<button data-i="${i}">${escapeHtml(u.name)}</button>`).join("")}</div>`
+      : `<div class="waithint">${escapeHtml(msg("web_room_invite_empty"))}</div>`,
+    onReady: (dialog) => {
+      for (const button of dialog.querySelectorAll("[data-i]")) {
+        button.onclick = async () => {
+          const person = people[Number(button.dataset.i)];
+          const ok = await roomPost("invite", { user_id: person.id });
+          if (ok) toast(msg("web_room_invite_sent", { name: person.name }));
+          closeDialog();
+        };
+      }
+    },
+  });
+}
+
+let veil = null;
+function closeDialog() { if (veil) { veil.remove(); veil = null; } }
+function openDialog({ title, body, confirm, onReady, onConfirm }) {
+  closeDialog();
+  veil = document.createElement("div");
+  veil.className = "veil";
+  veil.innerHTML =
+    `<div class="dialog">
+       <h3>${escapeHtml(title)}</h3>
+       ${body || ""}
+       <div class="row">
+         <button data-cancel>${escapeHtml(msg("web_lobby_cancel") || "Cancel")}</button>
+         ${confirm ? `<button class="primary" data-ok>${escapeHtml(confirm)}</button>` : ""}
+       </div>
+     </div>`;
+  veil.querySelector("[data-cancel]").onclick = closeDialog;
+  const ok = veil.querySelector("[data-ok]");
+  if (ok) ok.onclick = onConfirm;
+  veil.onclick = (e) => { if (e.target === veil) closeDialog(); };
+  document.body.appendChild(veil);
+  if (onReady) onReady(veil.querySelector(".dialog"));
+}
+
+function applyRoom(payload) {
+  room = payload;
+  // 승격/추방 같은 1회성 안내는 스냅샷에 한 번만 실려 온다
+  if (payload.notice && payload.notice.key !== lastNotice) {
+    lastNotice = payload.notice.key;
+    toast(msg(payload.notice.key, payload.notice.vars));
+  }
+  if (payload.closed) {
+    document.body.innerHTML =
+      `<div class="notice" style="padding:60px;text-align:center;color:#8d94a5">
+         ${escapeHtml(msg(payload.close_reason || "web_room_closed"))}</div>`;
+    setTimeout(goLobby, 2500);
+    return;
+  }
+  renderRoom();
+  const live = payload.match;
+  $("waitroom").hidden = !!live;
+  if (live) apply(live);
+}
+
 function apply(snapshot) {
   // 서버의 last_round는 도전자/상대 축이고 화면은 나/상대 축이라 여기서 한 번만 바꿔둔다.
   // 관전자는 도전자를 '나'로 본다(서버가 is_challenger=true로 내려준다).
@@ -645,30 +928,40 @@ function startPolling() {
   if (polling) return;
   setLive(false);
   polling = setInterval(async () => {
-    const res = await fetch(`/api/match?id=${matchId}&token=${encodeURIComponent(token)}`);
-    if (res.ok) { apply(await res.json()); setLive(true); }
+    const res = await fetch(`/api/match?id=${roomId}&token=${encodeURIComponent(token)}`);
+    if (res.ok) { route(await res.json()); setLive(true); }
   }, 2000);
 }
 
 function connect() {
-  const source = new EventSource(`/api/match/stream?id=${matchId}&token=${encodeURIComponent(token)}`);
+  const source = new EventSource(`/api/match/stream?id=${roomId}&token=${encodeURIComponent(token)}`);
   let got = false;
-  source.onmessage = (e) => { got = true; setLive(true); apply(JSON.parse(e.data)); };
+  source.onmessage = (e) => { got = true; setLive(true); route(JSON.parse(e.data)); };
   source.onerror = () => {
     // 첫 이벤트조차 못 받았으면 프록시가 스트림을 막고 있을 가능성이 크다 → 폴링으로 전환
     if (!got) { source.close(); startPolling(); } else { setLive(false); }
   };
 }
 
+// 스냅샷은 방(대기실 + 대결)으로 오지만, 폴링 경로 등에서 매치만 올 수도 있게 나눠 받는다
+function route(payload) {
+  if (payload && payload.type === "room") applyRoom(payload);
+  else apply(payload);
+}
+
 (async function boot() {
-  const res = await fetch(`/api/match/labels?id=${matchId}`);
+  const res = await fetch(`/api/match/labels?token=${encodeURIComponent(token)}`);
   if (!res.ok) {
-    document.body.innerHTML = `<div class="hint" style="padding:40px">Match not found. It may have already ended.</div>`;
+    document.body.innerHTML =
+      `<div class="hint" style="padding:40px">Link expired. Press the card game button in Discord again.</div>`;
     return;
   }
   labels = await res.json();
   EXT = labels.image_ext || EXT;
   $("hint").textContent = msg("match_waiting_deck");
+  $("inviteBtn").onclick = openInvite;
+  $("standBtn").onclick = () => roomPost("seat", { sit: false });
+  $("leaveBtn").onclick = async () => { await roomPost("leave"); goLobby(); };
   connect();
 })();
 </script>
