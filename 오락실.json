@@ -83,7 +83,9 @@
     "base_url": "",
     "token_ttl_seconds": 1800,
     "history_limit": 50,
-    "health_db_timeout_seconds": 3
+    "health_db_timeout_seconds": 3,
+    "db_command_timeout_seconds": 10,
+    "db_connect_timeout_seconds": 10
   },
   "category_language_config": {
     "――――――― 영어 채널": "en-US",
@@ -408,7 +410,11 @@
       "web_room_demoted_poor": "You stepped down to spectating — not enough points for the wager ({wager}P).",
       "web_room_seat_taken": "That seat is taken.",
       "web_room_in_match": "You cannot change seats during a match.",
-      "web_room_ready_all": "You can start once every player is ready"
+      "web_room_ready_all": "You can start once every player is ready",
+      "web_match_rematch": "Play again",
+      "web_match_scoreline": "{them}  {a} : {b}  {me}",
+      "web_room_closed_idle": "No match started for 10 minutes, so the room closed.",
+      "web_lobby_kicked_elsewhere": "You connected from another window, so this one was disconnected."
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -658,7 +664,11 @@
       "web_room_demoted_poor": "포인트가 부족해 관전자로 물러났습니다. (판돈 {wager}P)",
       "web_room_seat_taken": "이미 찬 자리입니다.",
       "web_room_in_match": "대결 중에는 자리를 바꿀 수 없습니다.",
-      "web_room_ready_all": "대전자가 모두 준비하면 시작할 수 있습니다"
+      "web_room_ready_all": "대전자가 모두 준비하면 시작할 수 있습니다",
+      "web_match_rematch": "다시 매칭",
+      "web_match_scoreline": "{them}  {a} : {b}  {me}",
+      "web_room_closed_idle": "10분 동안 대결이 시작되지 않아 방이 닫혔습니다.",
+      "web_lobby_kicked_elsewhere": "다른 창에서 접속해 이 창의 연결을 끊었습니다."
     },
     "zh-TW": {
       "checkin_success_title": "✅ 簽到完成",
@@ -908,7 +918,11 @@
       "web_room_demoted_poor": "點數不足，已退為觀戰。（賭注 {wager}P）",
       "web_room_seat_taken": "此位已有人。",
       "web_room_in_match": "對戰中無法更換位置。",
-      "web_room_ready_all": "所有對戰者準備後即可開始"
+      "web_room_ready_all": "所有對戰者準備後即可開始",
+      "web_match_rematch": "再來一場",
+      "web_match_scoreline": "{them}  {a} : {b}  {me}",
+      "web_room_closed_idle": "10 分鐘內未開始對戰，房間已關閉。",
+      "web_lobby_kicked_elsewhere": "你已從其他視窗連線，此視窗連線已中斷。"
     }
   },
   "panel_config": {
@@ -1036,12 +1050,14 @@
   },
   "lobby_config": {
     "token_ttl_seconds": 43200,
-    "idle_timeout_seconds": 300,
+    "idle_timeout_seconds": 600,
     "max_online": 300,
     "max_rooms": 50,
     "password_max_length": 32,
     "invite_ttl_seconds": 120,
-    "result_hold_seconds": 12,
-    "refresh_cooldown_seconds": 5
+    "refresh_cooldown_seconds": 5,
+    "room_idle_timeout_seconds": 600,
+    "disconnect_grace_seconds": 5,
+    "janitor_interval_seconds": 20
   }
 }
