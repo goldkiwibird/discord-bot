@@ -87,6 +87,10 @@
             padding: 18px; width: min(380px, 100%); display: flex; flex-direction: column; gap: 12px; }
   .dialog h3 { margin: 0; font-size: 16px; }
   .dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .dialog select {
+    width: 100%; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font-size: 14px; font-family: inherit;
+  }
   .dialog input[type="text"], .dialog input[type="number"], .dialog input[type="password"] {
     width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 8px; font-size: 14px; font-family: inherit; }
@@ -390,6 +394,14 @@ function openCreate() {
          <label>${escapeHtml(data.messages.web_lobby_wager_label)}</label>
          <input type="number" id="dWager" min="0" value="0">
        </div>
+       <div class="field" style="width:100%">
+         <label>${escapeHtml(data.messages.web_lobby_background_label)}</label>
+         <select id="dBackground">
+           <option value="random">${escapeHtml(data.messages.web_lobby_background_random)}</option>
+           ${(data.backgrounds || []).map(bg =>
+              `<option value="${escapeHtml(bg.id)}">${escapeHtml(bg.name)}</option>`).join("")}
+         </select>
+       </div>
        <label class="check"><input type="checkbox" id="dPrivate">
          ${escapeHtml(data.messages.web_lobby_private_label)}</label>
        <div class="field" style="width:100%" id="dPasswordRow" hidden>
@@ -411,13 +423,15 @@ function openCreate() {
 
       const res = await fetch(`/api/lobby/create?token=${encodeURIComponent(token)}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: dialog.querySelector("#dName").value, wager, password }),
+        body: JSON.stringify({ name: dialog.querySelector("#dName").value, wager, password,
+                               background: dialog.querySelector("#dBackground").value }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         return data.messages[{ poor: "web_lobby_poor", rooms_full: "web_lobby_rooms_full",
                                already_in_room: "web_lobby_already_in_room",
                                bad_wager: "web_lobby_wager_invalid",
+                               bad_background: "web_lobby_wager_invalid",
                                expired: "web_lobby_expired" }[body.error]] || body.error;
       }
       location.href = `/room?id=${body.room_id}&token=${encodeURIComponent(token)}`;
