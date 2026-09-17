@@ -87,7 +87,7 @@ async def load_hero_master(conn) -> int:
     HEROES_BY_GRADE.clear()
     try:
         rows = await conn.fetch(
-            "SELECT id, name, element, grade, race, job, name_en, name_zh_tw FROM heroes")
+            "SELECT id, name, element, grade, race, job, name_en FROM heroes")
     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError) as e:
         print(f"⚠️ {type(e).__name__}: 소환/덱 기능이 비활성화됩니다. "
               f"hero-cards의 heroes.sql / hero_name_translations.sql을 Neon에 반영하세요.")
@@ -117,7 +117,7 @@ def today_kst() -> date:
 def resolve_lang(interaction: discord.Interaction) -> str:
     """명령어를 입력한 채널의 카테고리로 표시 언어를 정한다 (유저의 디스코드 클라이언트 언어가 아님).
 
-    통합관리봇의 카테고리별 자동번역과 같은 방식 — 영어/번체 채널 카테고리에서 명령어를 쓰면
+    통합관리봇의 카테고리별 자동번역과 같은 방식 — 영어 채널 카테고리에서 명령어를 쓰면
     그 카테고리 언어로, 그 외(주로 한국어 채널)에서는 한국어로 응답한다.
     스레드(포럼 댓글 등)에서 실행된 경우 부모 채널의 카테고리를 본다.
     """
@@ -131,8 +131,6 @@ def resolve_lang(interaction: discord.Interaction) -> str:
 
 def hero_display_name(hero: dict, lang: str) -> str:
     """카드/메시지에 실제로 노출할 영웅 이름. 해당 언어 번역이 없으면 한국어 원본으로 대체."""
-    if lang == "zh-TW":
-        return hero.get("name_zh_tw") or hero["name"]
     if lang.startswith("en"):
         return hero.get("name_en") or hero["name"]
     return hero["name"]
