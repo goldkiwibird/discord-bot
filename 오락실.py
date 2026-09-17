@@ -10,6 +10,8 @@ import traceback
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
+from urllib.parse import quote
+
 import asyncpg
 import discord
 from aiohttp import web
@@ -1751,6 +1753,10 @@ async def handle_lobby_labels(request):
         "password_max_length": conf["password_max_length"],
         "idle_minutes": max(1, conf["idle_timeout_seconds"] // 60),
         "refresh_cooldown": conf.get("refresh_cooldown_seconds", 5),
+        # 방 만들기 창의 배경 드롭박스 항목. 이름은 보는 사람 언어로 골라서 내려보낸다.
+        "backgrounds": [{"id": item["id"],
+                         "name": item["name"].get(lang) or item["name"].get("en-US", item["id"])}
+                        for item in config["background_config"]["list"]],
         "messages": {
             key: get_msg(lang, key)
             for key in (
@@ -1768,6 +1774,7 @@ async def handle_lobby_labels(request):
                 "web_lobby_refresh", "web_lobby_refresh_wait", "web_lobby_refreshed",
                 "web_lobby_kicked_elsewhere",
                 "web_lobby_name_label", "web_lobby_name_placeholder", "web_lobby_default_name",
+                "web_lobby_background_label", "web_lobby_background_random",
                 "web_lobby_filter_visibility", "web_lobby_filter_all", "web_lobby_filter_public",
                 "web_lobby_filter_private", "web_lobby_filter_wager", "web_lobby_filter_search",
                 "web_lobby_filter_search_hint", "web_lobby_filter_none",
@@ -1798,6 +1805,12 @@ async def handle_room_create(request):
     if wager < 0 or (wager and wager < config["pvp_config"]["min_wager"]):
         return web.json_response({"error": "bad_wager"}, status=400)
 
+    # 배경은 **서버가 다시 확인한다** — 화면의 드롭박스는 편의일 뿐이고, 주소를 직접
+    # 두드리면 아무 문자열이나 보낼 수 있다. 등록되지 않은 id면 거절한다.
+    background = str(body.get("background") or BACKGROUND_RANDOM)
+    if background != BACKGROUND_RANDOM and background not in background_ids():
+        return web.json_response({"error": "bad_background"}, status=400)
+
     password = str(body.get("password") or "")[:config["lobby_config"]["password_max_length"]]
     name = str(body.get("name") or "").strip()[:40] or get_msg(lang, "web_lobby_default_name",
                                                                name=entry["name"])
@@ -1808,7 +1821,7 @@ async def handle_room_create(request):
 
     global _room_seq
     _room_seq += 1
-    room = Room(_room_seq, Player(user_id, entry["name"]), name, wager, password, lang)
+    room = Room(_room_seq, Player(user_id, entry["name"]), name, wager, password, lang, background)
     rooms[room.room_id] = room
     return web.json_response({"room_id": room.room_id})
 
@@ -1917,6 +1930,8 @@ async def handle_room_start(request):
                          PvpSide(opponent, decks[opponent.id]), room.wager, room.lang)
         match.room = room
         room.match = match
+        # 랜덤 방은 **판마다 무대를 다시 뽑는다.** 고정 배경을 고른 방은 그대로다.
+        room.current_background = pick_background(room.background)
         room.last_active = time.time()      # 방 폭파 시계를 되돌린다
         live_matches[match_id] = match
         # 이미 붙어 있는 방 구독자들이 매치 알림도 받도록 그대로 넘겨준다
@@ -2655,13 +2670,58 @@ def touch_lobby(user_id: int) -> None:
             session.last_action = time.time()
 
 
+BACKGROUND_RANDOM = "random"
+
+
+def background_ids() -> list[str]:
+    """설정에 등록된 배경 id 목록. 드롭박스 항목이자 **서버 검증의 기준**이다."""
+    return [item["id"] for item in config["background_config"]["list"]]
+
+
+def pick_background(choice: str) -> str:
+    """방이 실제로 쓸 배경 하나를 정한다. `random`이면 그때그때 하나 고른다.
+
+    랜덤을 **방을 만들 때 한 번** 고정하지 않는 이유: 그러면 랜덤과 직접 고른 것이
+    구분되지 않는다. 대결이 시작될 때마다 다시 뽑아야 판마다 무대가 바뀐다.
+    """
+    ids = background_ids()
+    if not ids:
+        return ""
+    if choice == BACKGROUND_RANDOM or choice not in ids:
+        return random.choice(ids)
+    return choice
+
+
+def background_view(background_id: str) -> dict | None:
+    """화면이 그대로 쓸 수 있는 배경 정보(주소 + 투명도)."""
+    conf = config["background_config"]
+    for item in conf["list"]:
+        if item["id"] == background_id:
+            # **파일명은 반드시 인코딩한다.** 버킷의 파일명이 한글 + 공백이라 그대로 붙이면
+            # 공백이 주소를 끊고 한글도 서버마다 해석이 갈린다. id(ASCII)와 파일명을 따로
+            # 둔 이유도 이것 — 버킷에서 이름을 바꿔도 드롭박스 값은 그대로 유지된다.
+            filename = item.get("file") or f"{item['id']}{conf['ext']}"
+            return {
+                "id": item["id"],
+                "url": conf["base_url"] + quote(filename),
+                # 배경마다 밝기가 달라 투명도도 다르다 — 자세한 이유는 오락실.json 주석 참고
+                "opacity": item["opacity"],
+                "saturate": conf["saturate"],
+            }
+    return None
+
+
 class Room:
     """대결 방 하나. 방장 + 상대 + 관전자, 그리고 시작되면 PvpMatch를 품는다."""
 
-    def __init__(self, room_id: int, host: Player, name: str, wager: int, password: str, lang: str):
+    def __init__(self, room_id: int, host: Player, name: str, wager: int, password: str, lang: str,
+                 background: str = BACKGROUND_RANDOM):
         self.room_id = room_id
         self.name = name
         self.wager = wager
+        # 방장이 고른 배경. "random"이면 고정하지 않고 판마다 다시 뽑는다.
+        self.background = background
+        self.current_background = pick_background(background)
         self.password = password          # ""면 공개 방
         self.lang = lang
         self.created_at = time.time()
@@ -2767,6 +2827,8 @@ class Room:
             "name": self.name,
             "wager": self.wager,
             "private": bool(self.password),
+            # 대기실과 대결이 같은 페이지라 배경도 방 스냅샷에 실어 보낸다.
+            "background": background_view(self.current_background),
             "closed": self.closed,
             "close_reason": self.close_reason,
             "host_id": str(self.host_id),
