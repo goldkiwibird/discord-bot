@@ -418,7 +418,7 @@
       <button class="bigbtn" id="actionBtn" hidden></button>
       <div class="waithint" id="waitHint"></div>
     </div>
-    <div class="stage" id="stage"><div class="hint" id="hint"></div></div>
+    <div class="stage" id="stage"></div>
     <div class="rail them">
       <div class="nameplate them"><span class="who" id="themName">—</span></div>
       <div class="hand them" id="themHand"></div>
@@ -1014,6 +1014,23 @@ function applyRoom(payload) {
   }
   $("waitroom").hidden = !!live;
   if (live) apply(live);
+  else resetBoard();
+}
+
+function resetBoard() {
+  // 대기실에서는 판 위에 아무것도 남기지 않는다.
+  // 대기실 배경이 반투명이라 **밑에 남은 것이 그대로 비친다.** 예전에는 페이지를 열 때
+  // "상대가 덱을 고르는 중" 문구를 미리 박아뒀는데, 그게 대기실 내내 뒤에 떠 있었다 —
+  // 그 문구는 **내가 덱을 고른 뒤 상대가 고르기 전까지**만 맞는 말이다(render()가 `my_decks`가
+  // 비었고 phase가 "deck"일 때만 띄운다). 다시 매칭으로 돌아왔을 때 지난 판 손패가 비치는 것도
+  // 같은 이유로 여기서 치운다.
+  $("stage").innerHTML = "";
+  $("stage").classList.remove("stacked");
+  $("themHand").innerHTML = "";
+  $("myHand").innerHTML = "";
+  $("themName").textContent = "—";
+  $("myName").textContent = "—";
+  $("timer").hidden = true;
 }
 
 function apply(snapshot) {
@@ -1079,7 +1096,6 @@ function route(payload) {
   }
   labels = await res.json();
   EXT = labels.image_ext || EXT;
-  $("hint").textContent = msg("match_waiting_deck");
   $("inviteBtn").onclick = openInvite;
   $("standBtn").onclick = () => roomPost("seat", { sit: false });
   $("leaveBtn").onclick = async () => { await roomPost("leave"); goLobby(); };
