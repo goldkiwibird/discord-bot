@@ -7,7 +7,7 @@ import secrets
 import sys
 import time
 import traceback
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from urllib.parse import quote
@@ -113,8 +113,10 @@ async def load_hero_master(conn) -> int:
     return len(HEROES)
 
 
-def today_kst() -> date:
-    return datetime.now(KST).date()
+def now_kst() -> datetime:
+    """출석 기준 시각. 날짜(last_checkin_date)와 시각(last_checkin_at)을 **한 번에** 뽑아 쓴다 —
+    따로 부르면 자정 언저리에 둘이 하루씩 어긋날 수 있다."""
+    return datetime.now(KST)
 
 def resolve_lang(interaction: discord.Interaction) -> str:
     """명령어를 입력한 채널의 카테고리로 표시 언어를 정한다 (유저의 디스코드 클라이언트 언어가 아님).
@@ -158,9 +160,20 @@ async def ensure_schema(conn):
             user_id BIGINT PRIMARY KEY,
             points BIGINT NOT NULL DEFAULT 0,
             last_checkin_date DATE,
+            last_checkin_at TIMESTAMPTZ,
             checkin_streak INT NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+    """)
+    # 이미 만들어진 users 테이블에는 위 CREATE가 적용되지 않으므로 컬럼을 따로 붙인다.
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_checkin_at TIMESTAMPTZ")
+    # 날짜만 있던 시절의 출석은 **그날 KST 자정**에 한 것으로 본다. 그래야 옛 유저가 바뀐 규칙
+    # 때문에 기다리는 일이 없다(기껏해야 그날 한 번 더 출석할 수 있게 되는데, 손해가 아니라
+    # 이득 쪽이라 놔둔다). 한 번 채우고 나면 대상 행이 없어 재시작마다 반복해도 무해하다.
+    await conn.execute("""
+        UPDATE users
+           SET last_checkin_at = (last_checkin_date::timestamp AT TIME ZONE 'Asia/Seoul')
+         WHERE last_checkin_at IS NULL AND last_checkin_date IS NOT NULL
     """)
     # 유저가 보유한 카드. 스탯은 절대값이 아니라 강화로 올린 증가분만 저장한다.
     # 그래야 나중에 직업/종족 기본 스탯을 조정해도 기존 카드에 그대로 반영된다.
@@ -346,28 +359,46 @@ panel_views_registered = False
 
 # 출석 SQL. 테스트(test_오락실.py)가 이 상수를 그대로 import해서 검증하므로, 문구를 복사해
 # 옮겨 적지 말 것 — 복사본을 두면 운영 쿼리만 바뀌었을 때 테스트가 눈치채지 못한다.
-# 인자: $1 user_id, $2 기본 보상, $3 오늘, $4 어제, $5 신규 유저 보상,
-#       $6 연속 하루당 보너스, $7 보너스 상한.
+# 인자: $1 user_id, $2 기본 보상, $3 신규 유저 보상, $4 연속 하루당 보너스, $5 보너스 상한,
+#       $6 지금(timestamptz), $7 오늘(KST 날짜), $8 재출석 대기시간, $9 연속 유지 한계.
 # `xmax = 0`은 ON CONFLICT를 안 타고 INSERT된 행, 즉 DB에 없던 신규 유저라는 뜻이다.
+#
+# **기준은 날짜가 아니라 마지막 출석 시각이다.** 예전에는 KST 날짜가 바뀌어야 출석할 수 있어서,
+# 밤 11시에 출석한 사람은 한 시간 뒤에 또 되는데 아침 9시에 출석한 사람은 15시간을 기다렸다.
+# 지금은 누구나 똑같이 $8(기본 23시간)을 기다린다.
 #
 # 연속 보너스는 **갱신된 연속일수 - 1**에 비례한다(1일차 0원, 2일차 +20 … 6일차부터 상한 100).
 # SET 절에서는 새 값을 아직 모르므로 "이어지면 기존 streak, 끊기면 0"으로 같은 값을 만든다
 # (이어질 때 새 streak = 기존 + 1 이므로 기존 streak = 새 streak - 1).
 # RETURNING 절의 checkin_streak은 이미 갱신된 값이라 INSERT 분기(=1, 보너스 0)에도 그대로 맞는다.
+#
+# 막혔을 때도 **반드시 한 행을 돌려준다**(UNION ALL 쪽). "언제 다시 되는지"를 알려주려면
+# 마지막 출석 시각이 필요한데, 예전처럼 빈 결과를 주면 그걸 알아내려고 조회를 한 번 더 해야
+# 한다 — Neon은 원격이라 왕복 한 번이 ~190ms다. `checked_in`으로 두 경우를 구분한다.
 CHECKIN_SQL = """
-    INSERT INTO users (user_id, points, last_checkin_date, checkin_streak)
-    VALUES ($1, $5, $3, 1)
-    ON CONFLICT (user_id) DO UPDATE SET
-        points = users.points + $2 + LEAST(
-            $6 * CASE WHEN users.last_checkin_date = $4 THEN users.checkin_streak ELSE 0 END, $7),
-        last_checkin_date = EXCLUDED.last_checkin_date,
-        checkin_streak = CASE
-            WHEN users.last_checkin_date = $4 THEN users.checkin_streak + 1
-            ELSE 1
-        END
-    WHERE users.last_checkin_date IS DISTINCT FROM EXCLUDED.last_checkin_date
-    RETURNING points, checkin_streak, (xmax = 0) AS is_first_time,
-              LEAST($6 * GREATEST(checkin_streak - 1, 0), $7) AS streak_bonus
+    WITH done AS (
+        INSERT INTO users (user_id, points, last_checkin_date, last_checkin_at, checkin_streak)
+        VALUES ($1, $3, $7, $6, 1)
+        ON CONFLICT (user_id) DO UPDATE SET
+            points = users.points + $2 + LEAST(
+                $4 * CASE WHEN users.last_checkin_at > $6 - $9::interval
+                          THEN users.checkin_streak ELSE 0 END, $5),
+            last_checkin_date = EXCLUDED.last_checkin_date,
+            last_checkin_at = EXCLUDED.last_checkin_at,
+            checkin_streak = CASE
+                WHEN users.last_checkin_at > $6 - $9::interval THEN users.checkin_streak + 1
+                ELSE 1
+            END
+        WHERE users.last_checkin_at IS NULL OR users.last_checkin_at <= $6 - $8::interval
+        RETURNING TRUE AS checked_in, points, checkin_streak, (xmax = 0) AS is_first_time,
+                  LEAST($4 * GREATEST(checkin_streak - 1, 0), $5) AS streak_bonus,
+                  last_checkin_at
+    )
+    SELECT * FROM done
+    UNION ALL
+    SELECT FALSE, u.points, u.checkin_streak, FALSE, 0, u.last_checkin_at
+      FROM users u
+     WHERE u.user_id = $1 AND NOT EXISTS (SELECT 1 FROM done)
 """
 
 async def do_checkin(interaction: discord.Interaction):
@@ -380,21 +411,36 @@ async def do_checkin(interaction: discord.Interaction):
     first_time_points = checkin_conf.get("first_time_points", daily_points)
     bonus_per_day = checkin_conf.get("streak_bonus_per_day", 0)
     max_bonus = checkin_conf.get("max_streak_bonus", 0)
-    today = today_kst()
-    yesterday = today - timedelta(days=1)
+    cooldown = timedelta(hours=checkin_conf.get("cooldown_hours", 23))
+    # 연속을 유지하려면 이 안에 다시 와야 한다. 대기시간보다 반드시 길어야 하고(안 그러면
+    # 출석하는 순간 이미 끊긴 것이 된다), 둘의 차이가 "연속을 이어갈 수 있는 시간대"다.
+    streak_window = timedelta(hours=checkin_conf.get("streak_reset_hours", 48))
+    now = now_kst()
 
     try:
         async with bot.pool.acquire() as conn:
             row = await conn.fetchrow(CHECKIN_SQL, interaction.user.id, daily_points,
-                                      today, yesterday, first_time_points,
-                                      bonus_per_day, max_bonus)
+                                      first_time_points, bonus_per_day, max_bonus,
+                                      now, now.date(), cooldown, streak_window)
     except Exception as e:
         print(f"⚠️ 출석 처리 중 DB 오류: {e}")
         await interaction.followup.send(get_msg(lang, "checkin_error"), ephemeral=True)
         return
 
     if row is None:
-        await interaction.followup.send(get_msg(lang, "checkin_already_done"), ephemeral=True)
+        # 여기에 오면 INSERT도 SELECT도 아무것도 못 준 것이라 DB 쪽 문제다.
+        await interaction.followup.send(get_msg(lang, "checkin_error"), ephemeral=True)
+        return
+
+    # 다음 출석 시각은 **디스코드 타임스탬프**로 보낸다 — `<t:초:R>`는 보는 사람 화면에서
+    # "3시간 후"처럼 저절로 줄어들고, `<t:초:f>`는 각자의 시간대로 번역된다. 문구에 시각을
+    # 직접 적으면 KST 기준 고정값이라 시간이 지나도 그대로고 해외 유저에게는 틀린 시간이 된다.
+    next_ts = int((row["last_checkin_at"] + cooldown).timestamp())
+    next_rel, next_abs = f"<t:{next_ts}:R>", f"<t:{next_ts}:f>"
+
+    if not row["checked_in"]:
+        await interaction.followup.send(
+            get_msg(lang, "checkin_already_done", next=next_rel, at=next_abs), ephemeral=True)
         return
 
     # `xmax = 0`이면 ON CONFLICT를 안 타고 새 행이 들어갔다는 뜻 = DB에 없던 신규 유저.
@@ -418,6 +464,9 @@ async def do_checkin(interaction: discord.Interaction):
     )
     embed.add_field(name=get_msg(lang, "checkin_points_label"), value=f"{row['points']:,}P", inline=True)
     embed.add_field(name=get_msg(lang, "checkin_streak_label"), value=get_msg(lang, "checkin_streak_value", streak=row['checkin_streak']), inline=True)
+    embed.add_field(name=get_msg(lang, "checkin_next_label"),
+                    value=get_msg(lang, "checkin_next_value", next=next_rel, at=next_abs),
+                    inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def do_points(interaction: discord.Interaction):
@@ -1187,7 +1236,7 @@ async def handle_deck_data(request):
     data["messages"] = {
         key: get_msg(lang, key)
         for key in ("web_title", "web_deck_tab", "web_selected_count", "web_save", "web_saved",
-                    "web_save_failed", "web_in_other_deck", "web_no_cards", "web_no_matches", "web_full",
+                    "web_save_failed", "web_no_cards", "web_no_matches", "web_full",
                     "web_filter_all", "web_filter_element", "web_filter_grade", "web_filter_job",
                     "web_reset_enhance", "web_reset_enhance_confirm", "web_reset_enhance_done",
                     "web_reset_enhance_failed",
