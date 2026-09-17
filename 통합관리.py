@@ -1137,7 +1137,8 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 async def setup_rules_channel(guild):
     r_cats = config.get("rules_config", {}).get("categories", {})
     r_chans = config.get("rules_config", {}).get("channels", {})
-    for lang in ["en", "zh-TW"]:
+    # 언어 목록은 설정(rules_config)에서 뽑는다 — 언어를 더하거나 뺄 때 코드를 고치지 않도록.
+    for lang in r_cats:
         cat = discord.utils.get(guild.categories, name=r_cats.get(lang))
         if cat:
             chan = discord.utils.get(cat.text_channels, name=r_chans.get(lang))
@@ -1196,7 +1197,15 @@ async def on_ready():
     if not bot_initialized:
         bot.loop.create_task(backup_worker())
 
-        for lang in ["en", "zh-TW"]:
+        # 패널 버튼은 custom_id에 언어가 들어가므로, 설정에 쓰인 언어를 모두 등록해야
+        # 재시작 전에 올라간 메시지의 버튼도 계속 동작한다.
+        panel_langs = list(config.get("rules_config", {}).get("channels", {}))
+        for section in ("voice_config", "text_config"):
+            for conf in config.get(section, {}).get("categories", {}).values():
+                if conf.get("lang") and conf["lang"] not in panel_langs:
+                    panel_langs.append(conf["lang"])
+
+        for lang in panel_langs:
             bot.add_view(RuleAgreementView(lang))
             bot.add_view(VoiceChannelCreateView(lang))
             bot.add_view(TextChannelCreateView(lang))
