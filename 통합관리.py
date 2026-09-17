@@ -579,6 +579,32 @@ async def process_forum_backup(message):
     try: await backup_channel.send(embed=embed, files=saved_files)
     except Exception: pass
 
+# 자동 번역에서 제외할 "글자가 아닌" 조각들
+# (커스텀 이모지 <:이름:id> / <a:이름:id>, 멘션·채널·역할, 타임스탬프, 링크)
+NON_TEXT_PATTERNS = [
+    re.compile(r"<a?:\w+:\d+>"),
+    re.compile(r"<(?:@[!&]?|#)\d+>"),
+    re.compile(r"<t:\d+(?::[tTdDfFR])?>"),
+    re.compile(r"https?://\S+"),
+]
+
+
+def has_translatable_text(text: str) -> bool:
+    """번역할 '글'이 실제로 들어 있는지 판별.
+
+    커스텀 이모지·이모티콘·멘션·링크만 있는 메시지를 번역하면
+    Gemini가 원문을 그대로 돌려주고, 번역 채널 코드블록에는
+    <:oruoru:1549683296772952074> 같은 원문이 그대로 노출된다.
+    유니코드 이모지(😀 등)와 문장부호는 애초에 isalnum()이 아니므로
+    따로 걸러내지 않아도 여기서 걸린다.
+    """
+    stripped = text
+    for pattern in NON_TEXT_PATTERNS:
+        stripped = pattern.sub(" ", stripped)
+
+    return any(ch.isalnum() for ch in stripped)
+
+
 async def translate_with_gemini(text: str, target_lang: str) -> str:
     if not GEMINI_API_KEY or not gemini_session:
         print("⚠️ GEMINI_API_KEY 또는 gemini_session이 설정되어 있지 않습니다.")
@@ -719,7 +745,9 @@ async def on_message(message):
         cat_name = message.channel.category.name
         trans_config = config.get("translation_config", {}).get("categories", {})
 
-        if cat_name in trans_config:
+        # 커스텀 이모지·스티커 등 '번역할 글'이 없는 메시지는 번역 채널로 보내지 않는다
+        # (스티커 단독 메시지는 content가 비어 있어 위 조건에서 이미 걸러진다)
+        if cat_name in trans_config and has_translatable_text(message.content):
             target_channel_name = trans_config[cat_name]["target_channel"]
             target_lang = trans_config[cat_name]["target_lang"]
 
