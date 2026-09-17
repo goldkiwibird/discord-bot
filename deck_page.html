@@ -134,10 +134,6 @@
           background: var(--accent); color: #fff; font-size: 12px; display: none;
           align-items: center; justify-content: center; }
   .card.selected .pick { display: flex; }
-  /* 다른 덱에도 들어 있다는 안내. 예전에는 잠금 표시였지만 이제 막지 않고 알려주기만 한다.
-     오른쪽 위는 선택 번호(.pick)가 쓰므로 왼쪽 아래에 둔다. */
-  .alsomsg { position: absolute; bottom: 6px; left: 6px; font-size: 10px; background: rgba(0,0,0,.72);
-             padding: 3px 6px; border-radius: 4px; color: var(--SR); }
   /* 카드 안(프레임 이름칸)에 이미 이름이 있으므로 아래에 다시 적지 않는다.
      그래서 이 칸은 **강화한 카드의 초기화 버튼이 있을 때만** 생긴다 — 늘 붙이면
      강화 안 한 카드 밑에 빈 여백만 남는다. */
@@ -442,9 +438,9 @@ function render() {
   }
 
   for (const card of cards) {
-    // 다른 덱에 배치된 카드는 이 덱에서 못 고름 (같은 카드는 덱 하나에만)
-    // 같은 카드를 여러 덱에 넣을 수 있으므로 잠그지 않는다. 다른 덱에도 들어 있으면 그 번호만 알려준다.
-    const alsoIn = card.deck_numbers.filter(n => n !== currentDeck);
+    // 같은 카드를 여러 덱에 넣을 수 있으므로 잠그지 않는다. **어느 덱에 또 들어 있는지는
+    // 적지 않는다** — 카드 왼쪽 아래에 꼬리표로 붙어 있었는데, 바로 그 자리가 강화 초기화
+    // 버튼 자리라 버튼을 가렸다. 선택 여부는 테두리와 왼쪽 위 번호가 이미 말해준다.
     const isSelected = selected.includes(card.hero_id);
 
     const el = document.createElement("div");
@@ -452,7 +448,6 @@ function render() {
 
     el.innerHTML = `
       ${cardArt(card, card.bonus)}
-      ${alsoIn.length ? `<span class="alsomsg">${msg("web_in_other_deck", { number: alsoIn.join(", ") })}</span>` : ""}
       <span class="pick">${selected.indexOf(card.hero_id) + 1}</span>
       ${card.enhance_count > 0
         ? `<div class="info"><button type="button" class="reset-btn">${data.messages.web_reset_enhance}</button></div>`
