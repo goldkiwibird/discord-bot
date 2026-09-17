@@ -413,7 +413,9 @@
       "web_match_scoreline": "{them}  {a} : {b}  {me}",
       "web_room_closed_idle": "No match started for 10 minutes, so the room closed.",
       "web_lobby_kicked_elsewhere": "You connected from another window, so this one was disconnected.",
-      "web_room_left_notice": "You left the room. Returning to the lobby."
+      "web_room_left_notice": "You left the room. Returning to the lobby.",
+      "web_lobby_background_label": "Background",
+      "web_lobby_background_random": "Random"
     },
     "ko": {
       "checkin_success_title": "✅ 출석 완료",
@@ -668,7 +670,9 @@
       "web_match_scoreline": "{them}  {a} : {b}  {me}",
       "web_room_closed_idle": "10분 동안 대결이 시작되지 않아 방이 닫혔습니다.",
       "web_lobby_kicked_elsewhere": "다른 창에서 접속해 이 창의 연결을 끊었습니다.",
-      "web_room_left_notice": "방에서 나왔습니다. 로비로 돌아갑니다."
+      "web_room_left_notice": "방에서 나왔습니다. 로비로 돌아갑니다.",
+      "web_lobby_background_label": "배경",
+      "web_lobby_background_random": "랜덤"
     }
   },
   "panel_config": {
@@ -805,5 +809,102 @@
     "room_idle_timeout_seconds": 600,
     "disconnect_grace_seconds": 5,
     "janitor_interval_seconds": 20
+  },
+  "background_config": {
+    "base_url": "https://pub-15b11ac199e9427a82bc2aae35bafcc6.r2.dev/background/",
+    "ext": ".mp4",
+    "saturate": 0.85,
+    "list": [
+      {
+        "id": "goblin_highland",
+        "file": "고블린 고원.mp4",
+        "name": {
+          "ko": "고블린 고원",
+          "en-US": "Goblin Highland"
+        },
+        "opacity": 0.306
+      },
+      {
+        "id": "forgotten_sanctuary",
+        "file": "잊혀진 성역.mp4",
+        "name": {
+          "ko": "잊혀진 성역",
+          "en-US": "Forgotten Sanctuary"
+        },
+        "opacity": 0.267
+      },
+      {
+        "id": "argo",
+        "file": "아르고-10.mp4",
+        "name": {
+          "ko": "아르고-10",
+          "en-US": "Argo-10"
+        },
+        "opacity": 0.256
+      },
+      {
+        "id": "ogre_forest",
+        "file": "오우거 숲.mp4",
+        "name": {
+          "ko": "오우거 숲",
+          "en-US": "Ogre Forest"
+        },
+        "opacity": 0.229
+      },
+      {
+        "id": "ruthville",
+        "file": "도시 루스빌.mp4",
+        "name": {
+          "ko": "도시 루스빌",
+          "en-US": "City of Ruthville"
+        },
+        "opacity": 0.2
+      },
+      {
+        "id": "bandit_forest",
+        "file": "도적의 숲.mp4",
+        "name": {
+          "ko": "도적의 숲",
+          "en-US": "Bandit Forest"
+        },
+        "opacity": 0.239
+      },
+      {
+        "id": "spirit_forest",
+        "file": "정령의 숲.mp4",
+        "name": {
+          "ko": "정령의 숲",
+          "en-US": "Spirit Forest"
+        },
+        "opacity": 0.279
+      },
+      {
+        "id": "guild_raid",
+        "file": "길드 레이드.mp4",
+        "name": {
+          "ko": "길드 레이드",
+          "en-US": "Guild Raid"
+        },
+        "opacity": 0.423
+      },
+      {
+        "id": "challenge_mission",
+        "file": "도전 미션.mp4",
+        "name": {
+          "ko": "도전 미션",
+          "en-US": "Challenge Mission"
+        },
+        "opacity": 0.428
+      },
+      {
+        "id": "boss_challenge",
+        "file": "보스 도전.mp4",
+        "name": {
+          "ko": "보스 도전",
+          "en-US": "Boss Challenge"
+        },
+        "opacity": 0.326
+      }
+    ]
   }
 }
