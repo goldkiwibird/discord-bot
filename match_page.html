@@ -34,6 +34,16 @@
      VS와 내민 카드가 **보드 정중앙**을 기준으로 놓여야 하기 때문. */
   .board { position: relative; height: 100%; min-height: 0; padding: 10px 14px; overflow: hidden; }
 
+  /* 방 배경 영상. **보드의 첫 자식**으로 두는 것이 전부다 — .board의 다른 자식은 전부
+     position:absolute라, 위치가 지정된 형제끼리는 DOM 순서로 그려져 자동으로 위에 온다.
+     z-index를 주거나, 보드의 나머지 자식을 한꺼번에 집어 position을 다시 지정하는
+     규칙을 넣으면 안 된다: 그런 선택자는 특이도가 .rail보다 높아 position:absolute를
+     덮어써 **손패가 위아래 끝에서 떨어진다.**(실제로 목업에서 그렇게 됐다)
+     투명도는 영상마다 다르므로 여기서 정하지 않고 스냅샷 값을 그대로 쓴다 —
+     배경 밝기가 2배까지 차이 나서 하나로 고정하면 글자 가독성이 배경마다 달라진다. */
+  .bgvid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+           pointer-events: none; opacity: 0; transition: opacity .4s ease; }
+
   /* 손패는 마주 보는 두 칸이고, **이름과 카드를 위아래로 쌓는다.**
      상대: 우측 상단에 이름 → **그 바로 아래**에 카드.
      나:  좌측 하단에 이름 → **그 바로 위**에 카드.
@@ -329,7 +339,9 @@
 
   /* ── 대기실 ─────────────────────────────────
      대결이 시작되기 전까지 보드를 덮는다. 시작하면 사라지고 그 아래 판이 드러난다. */
-  .waitroom { position: absolute; inset: 0; background: var(--bg); display: flex;
+  /* 배경 영상이 대기실에서도 보이도록 반투명으로 둔다. 완전 불투명이면 방에 들어가
+     시작을 누를 때까지 어떤 배경을 골랐는지 확인할 수가 없다. */
+  .waitroom { position: absolute; inset: 0; background: rgba(17, 19, 26, .86); display: flex;
               flex-direction: column; align-items: center; justify-content: center; gap: 22px;
               padding: 24px; text-align: center; z-index: 5; }
   .waitroom h2 { margin: 0; font-size: 20px; color: var(--dim); font-weight: 600; }
@@ -394,6 +406,7 @@
 <body>
 <div id="app">
   <div class="board" id="board">
+    <video class="bgvid" id="bgvid" autoplay muted loop playsinline preload="auto"></video>
     <div class="waitroom" id="waitroom" hidden>
       <h2 id="waitTitle"></h2>
       <div class="seats">
@@ -818,7 +831,30 @@ function renderSeat(index) {
   if (kick) kick.onclick = () => confirmKick(who);
 }
 
+// 지금 걸려 있는 배경 주소. **스냅샷은 상태가 바뀔 때마다 계속 오므로**, 주소가 실제로
+// 달라졌을 때만 src를 갈아야 한다 — 매번 넣으면 영상이 처음부터 다시 시작한다.
+let bgUrl = null;
+
+function renderBackground() {
+  const bg = room.background;
+  const video = $("bgvid");
+  if (!bg || !bg.url) {                 // 배경이 없는 방(설정이 비었을 때)
+    if (bgUrl !== null) { video.removeAttribute("src"); video.load(); bgUrl = null; }
+    video.style.opacity = 0;
+    return;
+  }
+  if (bg.url !== bgUrl) {
+    bgUrl = bg.url;
+    video.src = bg.url;
+    video.play().catch(() => {});       // 자동재생이 막혀도 화면은 그대로 진행한다
+  }
+  // 투명도/채도는 배경마다 다르다 (밝은 영상일수록 낮다)
+  video.style.opacity = bg.opacity;
+  video.style.filter = `saturate(${bg.saturate})`;
+}
+
 function renderRoom() {
+  renderBackground();
   $("roomName").textContent = room.name;
   // 판돈은 방이 가진 값이다. 예전에는 매치 스냅샷에서만 채워서 **대기실에서는 안 보였다**.
   $("wager").hidden = !room.wager;
