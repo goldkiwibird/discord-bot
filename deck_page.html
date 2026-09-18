@@ -85,6 +85,15 @@
   .filters select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
                      border-radius: 6px; padding: 5px 8px; font-size: 13px; }
 
+  /* ══ 모바일: 누를 것들만 손가락 크기로 ═══════════════════════════════
+     레이아웃은 손대지 않는다 — auto-fill 그리드 + flex-wrap이라 375px에서도 가로 스크롤
+     없이 2열로 깔린다(실측). 탭 38px / 셀렉트 28px만 작아서 잘못 눌리기 쉬웠다. */
+  @media (max-width: 760px) {
+    .viewtab, .tab, button.action, .reset-btn { min-height: 44px; }
+    .filters select { min-height: 44px; padding: 8px; font-size: 14px; }
+    .grid { padding: 12px; gap: 10px; }
+  }
+
   .grid { display: grid; gap: 12px; padding: 16px;
           grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .card { background: var(--panel); border: 2px solid var(--line); border-radius: 10px;
