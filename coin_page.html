@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coins</title>
+<style>
+  /* 로비·대전 화면과 같은 팔레트를 쓴다 — 세 화면을 오가므로 여기서만 다르면 다른 사이트처럼 보인다. */
+  :root {
+    --bg: #11131a; --panel: #1c1f29; --line: #2e3342; --text: #e7e9ee; --dim: #8d94a5;
+    --accent: #5865f2; --ok: #3ddc84; --bad: #ff4d4f; --gold: #ffc53d; --view: #3ddccf;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); overflow: hidden;
+         font-family: "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif; }
+  /* .list{display:flex} 같은 클래스 선택자가 브라우저 기본 [hidden]을 이기므로 !important가 필요하다. */
+  [hidden] { display: none !important; }
+
+  #app { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
+
+  /* ── 왼쪽: 종목 목록 ─────────────────────────────── */
+  .main { display: flex; flex-direction: column; min-height: 0; }
+  header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+  .titlerow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 20px; }
+  .points { font-size: 14px; color: var(--gold); font-variant-numeric: tabular-nums; }
+  .spacer { margin-left: auto; }
+  .refresh { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--ok);
+             background: transparent; color: var(--ok); font-size: 13px; cursor: pointer;
+             font-family: inherit; }
+  .refresh:active { background: var(--ok); color: #10121a; }
+
+  /* 쿨다운 배지 — 화면 어디서나 남은 시간이 보이도록 헤더에 상주한다. */
+  .cool { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 9px 12px;
+          border-radius: 9px; font-size: 13px; border: 1px solid var(--line); background: var(--panel); }
+  .cool.locked { border-color: var(--gold); color: var(--gold); }
+  .cool.ready { border-color: var(--ok); color: var(--ok); }
+  .cool .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 15px; }
+
+  .list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 18px 18px;
+          display: flex; flex-direction: column; gap: 8px; }
+  .coin { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line);
+          border-radius: 10px; padding: 11px 14px; display: flex; align-items: center;
+          gap: 14px; flex-wrap: wrap; cursor: pointer; }
+  .coin.sel { border-color: var(--accent); border-left-color: var(--accent); }
+  .coin.up { border-left-color: var(--ok); } .coin.down { border-left-color: var(--bad); }
+  .coin .nm { font-size: 15px; font-weight: 700; min-width: 96px; }
+  .coin .pr { font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 700; }
+  .coin .ch { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ch.up { color: var(--ok); } .ch.down { color: var(--bad); } .ch.flat { color: var(--dim); }
+  .coin .mine { font-size: 12px; color: var(--dim); margin-left: auto; text-align: right; }
+  .coin .mine b { color: var(--view); font-weight: 600; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--dim); }
+
+  /* ── 오른쪽: 차트 + 주문 ─────────────────────────── */
+  .side { background: var(--panel); border-left: 1px solid var(--line); padding: 14px;
+          display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .side h2 { margin: 0; font-size: 15px; }
+  .side .sub { font-size: 12px; color: var(--dim); }
+  canvas { width: 100%; height: 190px; background: var(--bg); border-radius: 8px;
+           border: 1px solid var(--line); }
+  .warn { font-size: 11px; color: var(--dim); line-height: 1.45; }
+  .warn b { color: var(--gold); font-weight: 600; }
+  .trade { display: flex; gap: 8px; }
+  .trade button { flex: 1; min-height: 44px; border-radius: 9px; border: none; cursor: pointer;
+                  font-size: 15px; font-weight: 700; font-family: inherit; }
+  .buy { background: var(--ok); color: #10121a; }
+  .sell { background: var(--bad); color: #fff; }
+  .trade button:disabled { background: var(--line); color: var(--dim); cursor: not-allowed; }
+  .trade button:not(:disabled):active { filter: brightness(1.15); }
+
+  /* ── 겹쳐 뜨는 창 ────────────────────────────────── */
+  /* **`align-items: center`가 아니다.** center는 창이 화면보다 높을 때 넘친 부분을 위로
+     잘라내서 스크롤로도 닿을 수 없다 — 모바일에서 키보드가 올라오면 바로 그렇게 된다.
+     flex-start + `.dialog { margin: auto }` 면 자리가 남을 때만 가운데로 밀어준다. */
+  .veil { position: fixed; inset: 0; background: rgba(8,9,13,.72); display: flex;
+          align-items: flex-start; justify-content: center; padding: 20px; z-index: 40;
+          overflow-y: auto; }
+  .dialog { margin: auto; background: var(--panel); border: 1px solid var(--line);
+            border-radius: 12px; padding: 18px; width: min(400px, 100%);
+            display: flex; flex-direction: column; gap: 12px; }
+  .dialog h3 { margin: 0; font-size: 17px; }
+  .dialog label { font-size: 12px; color: var(--dim); }
+  .dialog input { width: 100%; min-height: 44px; background: var(--bg); color: var(--text);
+                  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+                  font-size: 16px; font-family: inherit; font-variant-numeric: tabular-nums; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; }
+  .quick button { min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line);
+                  background: transparent; color: var(--text); font-size: 13px; cursor: pointer;
+                  font-family: inherit; }
+  .quick button:active { border-color: var(--accent); color: var(--accent); }
+  .est { font-size: 13px; color: var(--view); min-height: 18px; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: var(--gold); line-height: 1.45; }
+  .err { font-size: 12px; color: var(--bad); min-height: 16px; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .row button { min-height: 44px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--line);
+                background: transparent; color: var(--text); font-size: 14px; cursor: pointer;
+                font-family: inherit; }
+  .row button.primary { background: var(--accent); border-color: var(--accent); color: #fff;
+                        font-weight: 700; }
+  .row button:active { filter: brightness(1.2); }
+
+  /* ── 거래 직후 쿨다운 알림 ───────────────────────── */
+  /* 거래가 성사되면 **반드시 한 번은 막아 세워서** 5분을 알린다. 배지만으로는 놓친다. */
+  .cdbox { text-align: center; gap: 14px; }
+  .cdbox .big { font-size: 40px; font-weight: 900; color: var(--gold);
+                font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+  .cdbox .done { color: var(--ok); }
+  .cdbox .why { font-size: 13px; color: var(--dim); line-height: 1.5; }
+  .cdbox .deal { font-size: 14px; color: var(--text); }
+  .cdbox button { min-height: 44px; border-radius: 9px; border: none; background: var(--accent);
+                  color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+                  font-family: inherit; padding: 0 20px; }
+
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 12px 18px; font-size: 13px; z-index: 50; max-width: 90vw; }
+  .toast.bad { border-color: var(--bad); color: var(--bad); }
+  .toast.ok { border-color: var(--ok); color: var(--ok); }
+  .notice { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center;
+            justify-content: center; padding: 24px; text-align: center; color: var(--dim);
+            font-size: 15px; z-index: 60; }
+
+  /* 시트 손잡이. 넓은 화면에서는 시트가 없으므로 숨긴다 — **기본값을 모바일 블록보다
+     먼저** 선언해야 한다. 뒤에 두면 특이도가 같아 모바일의 `display: flex`를 덮어써서
+     좁은 화면에서 시트를 닫을 방법이 사라진다(실제로 이 파일이 그 상태였다). */
+  .sheetbar { display: none; align-items: center; justify-content: space-between; gap: 10px; }
+  .sheetbar button { min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line);
+                     background: transparent; color: var(--dim); font-size: 13px; cursor: pointer;
+                     font-family: inherit; }
+
+  /* ══ 모바일 ══════════════════════════════════════════════════════════════
+     **이 블록은 스타일시트 맨 끝에 모여 있어야 한다.** 특이도가 같으면 뒤에 온 규칙이
+     이기므로, 앞쪽에 두면 나중에 나오는 `.side { ... display: flex; ... }`가 그대로
+     덮어쓴다 — 쿼리는 걸리는데(matchMedia true) 적용은 안 되는 꼴이라 눈으로는 원인을
+     못 찾는다. 대전·로비 화면이 실제로 그 상태였다. 테스트가 이 배너 위치를 감시한다. */
+  @media (max-width: 760px) {
+    /* 오른쪽 칸을 **지우지 않고** 아래에서 올라오는 시트로 바꾼다. 지우면 주문을 넣을
+       방법이 없어진다(대전 화면 우측 패널과 같은 이유). */
+    #app { grid-template-columns: 1fr; }
+    .side { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+            max-height: 82vh; overflow-y: auto; border-left: none;
+            border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+            transform: translateY(101%); transition: transform .22s ease; }
+    #app.sheet .side { transform: none; }
+    #sheetveil { position: fixed; inset: 0; background: rgba(8,9,13,.6); z-index: 25; }
+    /* 목록에서 종목을 고르면 시트가 열리므로, 시트를 닫는 손잡이가 필요하다. */
+    .sheetbar { display: flex; }
+    .list { padding-bottom: 80px; }
+    .coin { min-height: 56px; }
+    .coin .nm { min-width: 0; }
+    canvas { height: 150px; }
+    .cool { position: sticky; top: 0; z-index: 5; }
+    /* 손가락으로 누르는 것은 44px 이상. 새로고침만 35px로 남아 있었다(실측). */
+    .refresh { min-height: 44px; }
+    /* 시트 안에 든 것이 시트 높이(82vh)보다 길어지면 **매수·매도가 스크롤 아래로 숨는다**
+       — 740x360 가로에서 실제로 버튼 윗변이 398px로 화면(360px) 밖이었다. 주 동작은
+       항상 보여야 하므로 시트 바닥에 붙여둔다. */
+    .trade { position: sticky; bottom: -1px; background: var(--panel);
+             padding: 8px 0; margin-bottom: -8px; z-index: 2; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="main">
+    <header>
+      <div class="titlerow">
+        <h1 id="title">—</h1>
+        <span class="points spacer" id="points"></span>
+        <button class="refresh" id="refreshBtn"></button>
+      </div>
+      <!-- 시계는 문구 **안에** 들어간다. 칸을 둘로 나눠 뒤에 붙이면 한국어가 뒤집힌다(coolLine 참고). -->
+      <div class="cool" id="cool" hidden><span id="coolText"></span></div>
+    </header>
+    <div class="list" id="list"><div class="empty" id="listEmpty"></div></div>
+  </div>
+
+  <aside class="side" id="side">
+    <div class="sheetbar"><span class="sub" id="sheetName"></span>
+      <button id="sheetClose">✕</button></div>
+    <h2 id="selName">—</h2>
+    <div class="sub" id="selMeta"></div>
+    <canvas id="chart" width="600" height="380"></canvas>
+    <div class="sub" id="chartNote"></div>
+    <div class="warn" id="delistWarn"></div>
+    <div class="trade">
+      <button class="buy" id="buyBtn" disabled></button>
+      <button class="sell" id="sellBtn" disabled></button>
+    </div>
+    <div class="warn" id="coolNote"></div>
+  </aside>
+</div>
+<div id="sheetveil" hidden></div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const token = params.get("token") || "";
+const $ = (id) => document.getElementById(id);
+const MOBILE = matchMedia("(max-width: 760px)");
+
+let data = null;          // /api/coin 스냅샷
+let selected = null;      // 보고 있는 coin_id
+let coolUntil = 0;        // 쿨다운이 풀리는 시각 (ms)
+let candles = null;
+
+const msg = (key, vars = {}) =>
+  (data.messages[key] || key).replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
+
+function esc(text) {
+  const d = document.createElement("div");
+  d.textContent = text ?? "";
+  return d.innerHTML;
+}
+const comma = (n) => Number(n).toLocaleString();
+function mmss(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+function coolLeft() { return Math.max(0, (coolUntil - Date.now()) / 1000); }
+
+/** `{mmss}` 자리에 시계를 **그 자리 그대로** 끼워 넣은 HTML을 만든다.
+ *
+ * 한국어는 시간이 문장 앞("4:32 뒤에…"), 영어는 뒤("…again in 4:32")라 **문구의 어순을
+ * 그대로 따라야 한다.** 예전에는 자리표시자를 빈 값으로 지우고 시계를 별도 칸에 뒤에
+ * 붙였는데, 영어만 맞고 한국어는 "뒤에 거래할 수 있습니다 4:32"로 깨졌다(브라우저 실측).
+ * 끼워 넣는 값은 우리가 만든 숫자와 콜론뿐이지만 문구는 그대로 이스케이프한다. */
+function coolLine(key, vars = {}) {
+  const raw = data.messages[key] || key;
+  return esc(raw).replace(/\{(\w+)\}/g, (_, k) =>
+    k === "mmss" ? `<span class="clock">${esc(vars.mmss)}</span>` : esc(vars[k] ?? ""));
+}
+
+function toast(text, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3600);
+}
+
+// ── 목록 ────────────────────────────────────────────────────────────────────
+function render() {
+  $("title").textContent = msg("web_coin_title");
+  $("points").textContent = `${msg("web_coin_points")} ${comma(data.points)}P`;
+  $("refreshBtn").textContent = msg("web_coin_refresh");
+  $("coolNote").innerHTML = "<b>⏳</b> " +
+    esc(msg("web_coin_cooldown_note", { minutes: data.cooldown_minutes }));
+
+  const box = $("list");
+  box.innerHTML = "";
+  if (!data.coins.length) {
+    box.innerHTML = `<div class="empty">${esc(msg("web_coin_empty"))}</div>`;
+    return;
+  }
+  for (const c of data.coins) {
+    const dir = c.change == null ? "flat" : c.change > 0 ? "up" : c.change < 0 ? "down" : "flat";
+    const el = document.createElement("div");
+    el.className = `coin ${dir}` + (c.id === selected ? " sel" : "");
+    el.innerHTML =
+      `<span class="nm">${esc(c.name)}</span>
+       <span class="pr">${comma(c.price)}P</span>
+       <span class="ch ${dir}">${c.change == null ? "—"
+          : (c.change > 0 ? "+" : "") + c.change.toFixed(2) + "%"}</span>
+       <span class="mine">${c.qty > 0
+          ? `${esc(msg("web_coin_holding"))} <b>${c.qty.toFixed(2)}</b> · ${comma(c.value)}P`
+          : ""}</span>`;
+    el.onclick = () => select(c.id);
+    box.appendChild(el);
+  }
+}
+
+function current() { return (data?.coins || []).find(c => c.id === selected) || null; }
+
+async function select(id) {
+  selected = id;
+  render();
+  const c = current();
+  if (!c) return;
+  $("selName").textContent = c.name;
+  $("sheetName").textContent = c.name;
+  $("selMeta").textContent =
+    `${msg("web_coin_price")} ${comma(c.price)}P · ${msg("web_coin_supply")} ${comma(c.supply)}`;
+  $("delistWarn").innerHTML =
+    "<b>⚠</b> " + esc(msg("web_coin_delist_warn", { price: data.delist_price }));
+  syncButtons();
+  if (MOBILE.matches) toggleSheet(true);
+  await loadCandles(id);
+}
+
+function toggleSheet(open) {
+  $("app").classList.toggle("sheet", open);
+  $("sheetveil").hidden = !open;
+}
+
+// ── 차트 ────────────────────────────────────────────────────────────────────
+async function loadCandles(id) {
+  try {
+    const res = await fetch(`/api/coin/candles?id=${id}&token=${encodeURIComponent(token)}`);
+    if (!res.ok) return;
+    candles = await res.json();
+  } catch { return; }
+  if (selected === id) drawChart();
+}
+
+function drawChart() {
+  const cv = $("chart");
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const rows = candles?.candles || [];
+  $("chartNote").textContent = rows.length ? "" : msg("web_coin_chart_empty");
+  if (!rows.length) return;
+
+  const hi = Math.max(...rows.map(r => r.h)), lo = Math.min(...rows.map(r => r.l));
+  const pad = (hi - lo) * 0.08 || 1;
+  const top = hi + pad, bot = Math.max(0, lo - pad);
+  const y = (v) => H - 12 - (v - bot) / (top - bot) * (H - 28);
+
+  // 봉은 **시간 축 위에** 놓는다. 공백 구간(봇이 멈춰 있던 때)은 봉이 아예 없으므로
+  // 자리도 비워야 한다 — 없는 봉을 지어내지 않는다.
+  const step = candles.seconds;
+  const t0 = rows[0].t, t1 = rows[rows.length - 1].t;
+  const span = Math.max(step, t1 - t0);
+  const x = (t) => 8 + (t - t0) / span * (W - 16);
+  const bw = Math.max(1.5, Math.min(9, (W - 16) / (span / step) * 0.68));
+
+  for (const r of rows) {
+    const cx = x(r.t);
+    const up = r.c >= r.o;
+    ctx.strokeStyle = up ? "#3ddc84" : "#ff4d4f";
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, y(r.h)); ctx.lineTo(cx, y(r.l)); ctx.stroke();
+    const a = y(r.o), b = y(r.c);
+    ctx.fillRect(cx - bw / 2, Math.min(a, b), bw, Math.max(1, Math.abs(a - b)));
+  }
+  ctx.fillStyle = "#8d94a5";
+  ctx.font = "11px system-ui";
+  ctx.fillText(Math.ceil(top) + "P", 8, 12);
+  ctx.fillText(Math.ceil(bot) + "P", 8, H - 2);
+}
+
+// ── 쿨다운 표시 ─────────────────────────────────────────────────────────────
+// 배지 · 버튼 · 팝업이 **같은 시계 하나**(coolUntil)를 본다. 따로 재면 어긋난다.
+function syncButtons() {
+  const c = current();
+  const left = coolLeft();
+  const locked = left > 0;
+  const buy = $("buyBtn"), sell = $("sellBtn");
+  buy.textContent = locked ? msg("web_coin_cooldown_badge", { mmss: mmss(left) })
+                           : msg("web_coin_buy");
+  sell.textContent = locked ? msg("web_coin_cooldown_badge", { mmss: mmss(left) })
+                            : msg("web_coin_sell");
+  buy.disabled = locked || !c;
+  sell.disabled = locked || !c || !(c.qty > 0);
+
+  const cool = $("cool");
+  cool.hidden = false;
+  if (locked) {
+    cool.className = "cool locked";
+    $("coolText").innerHTML = coolLine("web_coin_cooldown_left", { mmss: mmss(left) });
+  } else if (coolUntil) {
+    cool.className = "cool ready";
+    $("coolText").textContent = msg("web_coin_cooldown_ready");
+  } else {
+    cool.className = "cool";
+    $("coolText").textContent = msg("web_coin_cooldown_note", { minutes: data.cooldown_minutes });
+  }
+}
+
+// 1초마다 배지·버튼·팝업의 남은 시간을 같이 갱신한다.
+setInterval(() => {
+  if (!data) return;
+  syncButtons();
+  const box = document.querySelector(".cdbox");
+  if (box) paintCooldownBox(box);
+}, 1000);
+
+function paintCooldownBox(box) {
+  const left = coolLeft();
+  const big = box.querySelector(".big");
+  big.textContent = left > 0 ? mmss(left) : "✓";
+  big.classList.toggle("done", left <= 0);
+  const line = box.querySelector(".cdleft");
+  if (left > 0) line.innerHTML = coolLine("web_coin_cooldown_left", { mmss: mmss(left) });
+  else line.textContent = msg("web_coin_cooldown_ready");
+}
+
+// ── 겹쳐 뜨는 창 ────────────────────────────────────────────────────────────
+let veil = null;
+function closeDialog() { if (veil) { veil.remove(); veil = null; } }
+
+function openDialog(inner, onReady) {
+  closeDialog();
+  veil = document.createElement("div");
+  veil.className = "veil";
+  veil.innerHTML = `<div class="dialog">${inner}</div>`;
+  veil.onclick = (e) => { if (e.target === veil) closeDialog(); };
+  document.body.appendChild(veil);
+  onReady?.(veil.querySelector(".dialog"));
+}
+
+/** 거래 직후 — 반드시 한 번 막아 세워서 쿨다운을 알린다. */
+function showCooldown(dealText) {
+  openDialog(
+    `<div class="cdbox" style="display:flex;flex-direction:column;align-items:center">
+       <h3>${esc(msg("web_coin_cooldown_title", { minutes: data.cooldown_minutes }))}</h3>
+       <div class="deal">${esc(dealText)}</div>
+       <div class="big"></div>
+       <div class="cdleft sub"></div>
+       <div class="why">${esc(msg("web_coin_cooldown_body"))}</div>
+       <button data-ok>${esc(msg("web_coin_cooldown_ok"))}</button>
+     </div>`,
+    (dlg) => {
+      paintCooldownBox(dlg.querySelector(".cdbox"));
+      dlg.querySelector("[data-ok]").onclick = closeDialog;
+    });
+}
+
+function openTrade(side) {
+  const c = current();
+  if (!c || coolLeft() > 0) return;
+  const isBuy = side === "buy";
+  const maxQty = c.supply * data.max_order_fraction;
+  openDialog(
+    `<h3>${esc(msg(isBuy ? "web_coin_buy_title" : "web_coin_sell_title", { name: c.name }))}</h3>
+     <div>
+       <label>${esc(msg(isBuy ? "web_coin_amount_points" : "web_coin_amount_qty"))}</label>
+       <input type="number" id="amt" inputmode="decimal" min="0"
+              step="${isBuy ? 1 : "any"}" value="">
+     </div>
+     <div class="quick" id="quick"></div>
+     <div class="est" id="est"></div>
+     <div class="note">⏳ ${esc(msg("web_coin_cooldown_note", { minutes: data.cooldown_minutes }))}</div>
+     <div class="err" id="err"></div>
+     <div class="row">
+       <button data-cancel>${esc(msg("web_coin_cancel"))}</button>
+       <button class="primary" data-ok>${esc(msg("web_coin_confirm"))}</button>
+     </div>`,
+    (dlg) => {
+      const amt = dlg.querySelector("#amt");
+      const est = dlg.querySelector("#est");
+      const err = dlg.querySelector("#err");
+
+      const quicks = isBuy
+        ? [["25%", data.points * .25], ["50%", data.points * .5], [msg("web_coin_max"), data.points]]
+        : [["25%", c.qty * .25], ["50%", c.qty * .5], [msg("web_coin_max"), c.qty]];
+      for (const [label, value] of quicks) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.onclick = () => { amt.value = isBuy ? Math.floor(value) : value.toFixed(4); preview(); };
+        dlg.querySelector("#quick").appendChild(b);
+      }
+
+      // 서버가 쓰는 것과 같은 식으로 미리 계산해서 보여준다 (k = λ / 총발행량).
+      function preview() {
+        const v = Number(amt.value);
+        err.textContent = "";
+        if (!(v > 0)) { est.textContent = ""; return; }
+        // 계수는 **서버가 내려준 값**을 쓴다. 여기 숫자를 박아두면 설정을 고쳤을 때
+        // 예상 체결량만 조용히 틀려진다(값의 정본은 오락실.json 의 impact_lambda).
+        const k = data.impact_lambda / c.supply, P = c.price;
+        if (isBuy) {
+          const q = Math.log1p(k * v / P) / k;
+          est.textContent = msg("web_coin_estimate",
+            { qty: q.toFixed(2), price: Math.ceil(P + k * v).toLocaleString() });
+          if (q > maxQty) err.textContent = msg("web_coin_err_max",
+            { percent: Math.round(data.max_order_fraction * 100) });
+          else if (v > data.points) err.textContent = msg("web_coin_err_poor");
+          else if (v < data.min_order_points)
+            err.textContent = msg("web_coin_err_min", { min: data.min_order_points });
+        } else {
+          const recv = Math.floor(P * (1 - Math.exp(-k * v)) / k);
+          est.textContent = msg("web_coin_estimate_sell",
+            { points: recv.toLocaleString(), price: Math.ceil(P * Math.exp(-k * v)).toLocaleString() });
+          if (v > c.qty + 1e-9) err.textContent = msg("web_coin_err_qty");
+          else if (v > maxQty) err.textContent = msg("web_coin_err_max",
+            { percent: Math.round(data.max_order_fraction * 100) });
+        }
+      }
+      amt.oninput = preview;
+      amt.focus();
+      dlg.querySelector("[data-cancel]").onclick = closeDialog;
+      dlg.querySelector("[data-ok]").onclick = () => submit(side, Number(amt.value), err);
+    });
+}
+
+async function submit(side, amount, err) {
+  if (!(amount > 0)) return;
+  const btn = veil.querySelector("[data-ok]");
+  btn.disabled = true;
+  let body;
+  try {
+    const res = await fetch(`/api/coin/trade?token=${encodeURIComponent(token)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ side, coin_id: selected, amount }),
+    });
+    body = await res.json();
+    if (!res.ok) {
+      // 쿨다운이면 창을 닫고 같은 시계를 쓰는 안내로 넘긴다.
+      if (body.error === "cooldown") {
+        coolUntil = Date.now() + (body.cooldown_seconds || 0) * 1000;
+        closeDialog(); syncButtons(); showCooldown("");
+        return;
+      }
+      err.textContent = body.message || msg("web_coin_err_generic");
+      btn.disabled = false;
+      return;
+    }
+  } catch {
+    err.textContent = msg("web_coin_err_generic");
+    btn.disabled = false;
+    return;
+  }
+  coolUntil = Date.now() + body.cooldown_seconds * 1000;
+  closeDialog();
+  await refresh();
+  showCooldown(body.message);          // ← 성사되면 반드시 한 번 막아 세운다
+}
+
+// ── 조회 ────────────────────────────────────────────────────────────────────
+// **두 경로로 나뉜다.** 시세(`/api/coin/prices`)는 서버가 메모리로만 답하므로 자주 불러도
+// Neon에 부하가 없고, 전체 스냅샷(`/api/coin`)은 포인트·보유·쿨다운을 읽느라 DB를 세 번
+// 보므로 **화면 진입과 거래 직후에만** 부른다. 예전에 덱 조회를 주기적으로 돌렸다가
+// 연결 풀이 idle 0으로 말라 출석·소환·대결까지 느려진 적이 있다.
+async function refresh() {
+  const res = await fetch(`/api/coin?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    document.body.innerHTML =
+      `<div class="notice">${esc(data ? msg("web_coin_expired") : "Link expired.")}</div>`;
+    return false;
+  }
+  data = await res.json();
+  // 서버가 정답이다 — 새로고침·재접속해도 남은 시간이 이어진다.
+  if (data.cooldown_seconds > 0) coolUntil = Date.now() + data.cooldown_seconds * 1000;
+  applyCoins(data.coins);
+  return true;
+}
+
+/** 시세만 받아 목록·차트를 갱신한다. DB를 건드리지 않는 경로다. */
+async function poll() {
+  if (!data || veil) return;
+  try {
+    const res = await fetch(`/api/coin/prices?token=${encodeURIComponent(token)}`);
+    if (!res.ok) return;
+    const fresh = (await res.json()).coins;
+    // 보유 수량·평가액은 시세 경로가 모르므로(유저별 값) 기존 값을 유지한다.
+    const mine = new Map(data.coins.map(c => [c.id, c]));
+    for (const c of fresh) {
+      const old = mine.get(c.id);
+      if (old) { c.qty = old.qty; c.value = old.value; }
+    }
+    applyCoins(fresh);
+  } catch { /* 일시적 실패는 다음 주기에 회복된다 */ }
+}
+
+function applyCoins(list) {
+  data.coins = list;
+  if (selected != null && !list.some(c => c.id === selected)) {
+    toast(msg("web_coin_delisted_banner"), "bad");
+    selected = null;
+    $("selName").textContent = "—";
+    $("selMeta").textContent = "";
+  }
+  const c = current();
+  if (c) {
+    $("selMeta").textContent =
+      `${msg("web_coin_price")} ${comma(c.price)}P · ${msg("web_coin_supply")} ${comma(c.supply)}`;
+    // **진행 중인 봉은 시세 응답에 같이 온다** — 차트를 다시 조회하지 않아도 마지막 봉이
+    // 살아 움직인다. 봉이 넘어가면 그때만 과거 봉을 다시 받는다.
+    if (candles && c.live) {
+      const rows = candles.candles;
+      if (rows.length && rows[rows.length - 1].t === c.live.t) rows[rows.length - 1] = c.live;
+      else { rows.push(c.live); if (rows.length > 289) rows.shift(); }
+    }
+  }
+  render();
+  syncButtons();
+  if (candles) drawChart();
+}
+
+$("refreshBtn").onclick = () => refresh();
+$("buyBtn").onclick = () => openTrade("buy");
+$("sellBtn").onclick = () => openTrade("sell");
+$("sheetClose").onclick = () => toggleSheet(false);
+$("sheetveil").onclick = () => toggleSheet(false);
+// 화면을 돌리면 시트 상태를 정리한다 — 데스크톱 폭에서는 시트가 의미 없다.
+MOBILE.addEventListener("change", () => { if (!MOBILE.matches) toggleSheet(false); });
+window.addEventListener("resize", () => { if (candles) drawChart(); });
+
+(async function boot() {
+  if (!await refresh()) return;
+  $("listEmpty").textContent = msg("web_coin_loading");
+  if (data.coins.length) await select(data.coins[0].id);
+  // 시세만 주기적으로 받는다(메모리 경로라 DB 부하 0). 전체 스냅샷은 거래 직후에만 부른다.
+  setInterval(poll, 3000);
+})();
+</script>
+</body>
+</html>
