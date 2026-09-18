@@ -275,6 +275,50 @@ async def ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS pvp_matches_opponent_idx
             ON pvp_matches (opponent_id, match_id DESC)
     """)
+    # ── 가상 코인 시장 ──────────────────────────────────────────────────────
+    # **진행 중인 봉(candle_*)을 코인 행에 같이 들고 있는다.** 안 하면 재기동할 때마다
+    # 그 5분의 고가·저가가 사라진다 — 가격만으로는 복원되지 않는다(명세 4-2).
+    # 틱은 저장하지 않는다. 되감을 일이 없고, 틱마다 쓰면 30일에 990MB가 된다.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS coins (
+            coin_id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            supply INT NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            listed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            delisted_at TIMESTAMPTZ,
+            candle_start TIMESTAMPTZ,
+            candle_open DOUBLE PRECISION,
+            candle_high DOUBLE PRECISION,
+            candle_low DOUBLE PRECISION
+        )
+    """)
+    # 수량은 정수가 아니라 실수다. 매수식 `q = log1p(k*W/P)/k` 가 실수를 주고, 정수로 반올림하면
+    # 명세 3장의 왕복 항등식이 깨져 포인트 복제 여지가 생긴다. 400P짜리를 1만P어치 사면 24.x개다.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS coin_holdings (
+            user_id BIGINT NOT NULL,
+            coin_id INT NOT NULL,
+            qty DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (user_id, coin_id)
+        )
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS coin_candles (
+            coin_id INT NOT NULL,
+            bucket_start TIMESTAMPTZ NOT NULL,
+            o DOUBLE PRECISION NOT NULL,
+            h DOUBLE PRECISION NOT NULL,
+            l DOUBLE PRECISION NOT NULL,
+            c DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (coin_id, bucket_start)
+        )
+    """)
+    # 쿨다운은 **코인별이 아니라 사람별**이다. 코인마다 따로 두면 종목을 갈아타며 계속
+    # 거래할 수 있어서 5분 제한이 의미를 잃는다.
+    await conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS coin_cooldown_until TIMESTAMPTZ")
+
 
 class ArcadeBot(commands.Bot):
     def __init__(self):
@@ -303,6 +347,11 @@ class ArcadeBot(commands.Bot):
         async with self.pool.acquire() as conn:
             await ensure_schema(conn)
             await self.load_heroes(conn)
+            # 살아있는 코인을 메모리로 올린다. **공백만큼 틱을 따라잡지 않는다**(명세 4-2).
+            await load_coins(conn)
+            while len(coins) < config["coin_config"]["target_listed"]:
+                if await list_new_coin(conn) is None:
+                    break
             # 지난번에 봇이 매치 도중에 종료됐다면 그때 묶여 있던 판돈을 여기서 돌려준다
             # (진행 중이던 판은 버튼이 이미 죽어서 이어갈 수 없으므로 취소가 맞다)
             refunded = await refund_stale_matches(conn)
@@ -1185,6 +1234,36 @@ async def summon_and_reply(interaction: discord.Interaction, count: int, cost: i
 # 몇 분짜리 단기 토큰이라 재시작 시 사라져도 문제없어서 메모리에만 둔다 (Render 디스크는 어차피 휘발성).
 deck_tokens: dict[str, tuple[int, str, float]] = {}
 
+# ── 호출 빈도 제한 (유저당 토큰 버킷) ────────────────────────────────────────
+# **토큰은 누가 갖고 있는지 확인해줄 뿐, 얼마나 자주 쓰는지는 막아주지 않는다.** 실측으로
+# 두 군데가 뚫렸다 — ① 비공개 방 비밀번호를 **초당 2,884번** 시도해 4자리를 1.7초에 뚫었고,
+# ② 덱 조회를 반복해 **연결 풀을 idle 0으로 말려** 다른 기능(출석·소환·대결 시작)까지
+# 두 배 넘게 느려졌다(`/health`는 그동안에도 200을 준다).
+#
+# 고정 간격이 아니라 버킷인 이유: 화면이 저장 직후 다시 조회하는 것 같은 **정상적인 연속
+# 호출**을 깨면 안 된다. 잠깐 몰아 쓰는 것은 그대로 두고 계속 쏘는 것만 막는다.
+_rate_buckets: dict[tuple[str, int], tuple[float, float]] = {}   # (이름, user_id) -> (남은 토큰, 시각)
+
+
+def rate_ok(name: str, user_id: int, burst: int, per_second: float) -> bool:
+    """이번 호출을 받아줄지. 버킷이 비어 있으면 False (토큰도 깎지 않는다)."""
+    now = time.monotonic()
+    tokens, last = _rate_buckets.get((name, user_id), (float(burst), now))
+    tokens = min(float(burst), tokens + (now - last) * per_second)
+    if tokens < 1:
+        _rate_buckets[(name, user_id)] = (tokens, now)
+        return False
+    _rate_buckets[(name, user_id)] = (tokens - 1, now)
+    return True
+
+
+def rate_limited(name: str, user_id: int, burst: int, per_second: float):
+    """막혔으면 429 응답, 통과면 None. 핸들러에서 `if r := rate_limited(...): return r` 꼴로 쓴다."""
+    if rate_ok(name, user_id, burst, per_second):
+        return None
+    return web.json_response({"error": "too_many"}, status=429)
+
+
 def issue_deck_token(user_id: int, lang: str) -> str:
     ttl = config["web_config"]["token_ttl_seconds"]
     now = time.time()
@@ -1215,6 +1294,8 @@ async def handle_deck_data(request):
     resolved = resolve_deck_token(request)
     if resolved is None:
         return web.json_response({"error": "expired"}, status=403)
+    if limited := rate_limited("read_db", resolved[0], burst=8, per_second=1):
+        return limited
     user_id, lang = resolved
 
     async with bot.pool.acquire() as conn:
@@ -1262,6 +1343,8 @@ async def handle_match_history(request):
     if resolved is None:
         return web.json_response({"error": "expired"}, status=403)
     user_id, lang = resolved
+    if limited := rate_limited("read_db", user_id, burst=8, per_second=1):
+        return limited
 
     limit = config["web_config"].get("history_limit", 50)
     async with bot.pool.acquire() as conn:
@@ -1278,6 +1361,8 @@ async def handle_summon_history(request):
     if resolved is None:
         return web.json_response({"error": "expired"}, status=403)
     user_id, lang = resolved
+    if limited := rate_limited("read_db", user_id, burst=8, per_second=1):
+        return limited
 
     limit = config["web_config"].get("history_limit", 50)
     async with bot.pool.acquire() as conn:
@@ -1424,6 +1509,8 @@ async def handle_room_state(request):
     if resolved is None:
         return web.json_response({"error": "not_found"}, status=404)
     room, entry = resolved
+    if limited := rate_limited("poll", entry["user_id"], burst=20, per_second=3):
+        return limited
     room.polled[entry["user_id"]] = time.time()
     return web.json_response(room.snapshot(entry["user_id"]))
 
@@ -1822,7 +1909,7 @@ async def handle_lobby_labels(request):
                 "web_lobby_invite_accept", "web_lobby_invite_decline", "web_lobby_my_points",
                 "web_lobby_refresh", "web_lobby_refresh_wait", "web_lobby_refreshed",
                 "web_lobby_kicked_elsewhere",
-                "web_lobby_name_label", "web_lobby_name_placeholder", "web_lobby_default_name",
+                "web_lobby_name_label", "web_lobby_default_name",
                 "web_lobby_background_label", "web_lobby_background_random",
                 "web_lobby_filter_visibility", "web_lobby_filter_all", "web_lobby_filter_public",
                 "web_lobby_filter_private", "web_lobby_filter_wager", "web_lobby_filter_search",
@@ -1902,6 +1989,12 @@ async def handle_room_join(request):
     # 이미 확인을 거친 셈이다. 목록을 보고 직접 들어오는 경우에는 관전이라도 물어본다.
     if room.password and not room.is_invited(user_id):
         if str(body.get("password") or "") != room.password:
+            # **틀린 시도만** 센다 — 비밀번호를 아는 사람은 몇 번을 드나들어도 걸리지 않는다.
+            # 5번까지는 그대로 받아주고(오타), 그 뒤로는 분당 1번으로 떨어진다.
+            # 이게 없으면 4자리 비밀번호가 1.7초에 뚫린다(실측 초당 2,884건).
+            # 방 번호는 순번이라 찾기도 쉬우므로, **방별이 아니라 사람별로** 센다.
+            if not rate_ok("join_pw", user_id, burst=5, per_second=1 / 60):
+                return web.json_response({"error": "too_many"}, status=429)
             return web.json_response({"error": "wrong_password"}, status=403)
 
     async with room.lock:
@@ -2115,6 +2208,540 @@ async def handle_room_invite(request):
     return web.json_response({"ok": True})
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 가상 코인 시장
+#
+# 계수와 규칙의 근거는 전부 `코인_구현_명세.md` 에 있다. **여기서 수치를 임의로 바꾸면
+# 명세 5장의 검증 기준이 통째로 깨진다.** 특히 건드리면 안 되는 것들:
+#   · `dt`/`sqrt(dt)` 스케일링 (계수가 일간 기준이다. 빼면 일간 변동성 3,180%가 된다)
+#   · 매수 `ceil` / 매도 `floor` 방향 (이 조합이 포인트 복제를 막는다)
+#   · 복원항 `- K*v*v` (별도 앵커를 추가하지 말 것)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CoinState:
+    """코인 하나의 메모리 상태.
+
+    **가격은 메모리가 정본이고 DB는 백업이다.** 틱마다 DB에 쓰면 2초 틱 기준 코인 8종에
+    하루 345,600행이라 Neon 무료 0.5GB를 30일이면 넘긴다(명세 4-2). 그래서 디스크에는
+    **봉이 마감될 때와 거래할 때만** 쓴다.
+    """
+
+    __slots__ = ("coin_id", "name", "supply", "price", "k", "alive",
+                 "bucket", "open", "high", "low", "lock")
+
+    def __init__(self, coin_id: int, name: str, supply: int, price: float):
+        self.coin_id = coin_id
+        self.name = name
+        self.supply = supply
+        self.price = float(price)
+        self.k = config["coin_config"]["impact_lambda"] / supply
+        self.alive = True
+        self.bucket = None        # 진행 중인 봉의 시작 시각(유닉스 초, 봉 길이로 내림)
+        self.open = self.high = self.low = float(price)
+        # 틱과 거래를 코인별로 직렬화한다. 명세 3장: 검증 → 포인트·보유량 → 가격 → 상폐가
+        # 한 덩어리여야 한다.
+        self.lock = asyncio.Lock()
+
+    def volatility(self) -> float:
+        conf = config["coin_config"]
+        return conf["sigma_ref"] * (self.price / conf["ref_price"]) ** conf["sigma_beta"]
+
+    def observe(self, now: float) -> tuple | None:
+        """현재가를 봉에 반영한다. 봉이 넘어갔으면 마감된 봉을 돌려준다."""
+        size = config["coin_config"]["candle_seconds"]
+        slot = int(now // size) * size
+        if self.bucket is None:
+            self.bucket = slot
+            self.open = self.high = self.low = self.price
+            return None
+        if slot != self.bucket:
+            closed = (self.bucket, self.open, self.high, self.low, self.price)
+            self.bucket = slot
+            self.open = self.high = self.low = self.price
+            return closed
+        self.high = max(self.high, self.price)
+        self.low = min(self.low, self.price)
+        return None
+
+
+coins: dict[int, CoinState] = {}     # coin_id -> 살아있는 코인
+_coin_engine: asyncio.Task | None = None
+
+# ── 24시간 등락률 기준가 캐시 ────────────────────────────────────────────────
+# 이 값을 요청마다 조회하면 **24시간치 봉을 전 종목에 대해 스캔**하는 쿼리가 화면 새로고침
+# 주기로 돌아간다. 유저 20명이 5초마다 새로고침하면 그것만 분당 240회고, 나머지까지 합쳐
+# 풀의 30%를 보고만 있는 사람들이 먹는다 — 예전에 덱 조회로 풀을 idle 0으로 말려 출석·소환·
+# 대결까지 느려진 사고와 같은 형태다. 기준가는 하루 단위라 1분에 한 번 갱신해도 충분하다.
+_coin_baseline: dict[int, float] = {}
+_coin_baseline_at: float = 0.0
+COIN_BASELINE_TTL = 60.0
+
+
+def coin_display(price: float) -> int:
+    """화면에 보여줄 정수 가격. **이 값을 계산·저장·상폐 판정에 재사용하지 말 것**(명세 2장)."""
+    return math.ceil(price)
+
+
+async def load_coins(conn) -> None:
+    """DB에 남아 있는 살아있는 코인을 메모리로 올린다.
+
+    **여기서 공백만큼 틱을 따라잡지 않는다.** 봇이 꺼져 있던 동안 모델 시간은 흐르지 않았고,
+    그게 맞다 — 따라잡으면 아무도 거래할 수 없던 구간의 변동이 한꺼번에 반영돼서, 24시간
+    공백이면 150P 보유자의 14.1%가 팔 기회도 없이 전액 소각된다(명세 4-2).
+    """
+    coins.clear()
+    rows = await conn.fetch(
+        "SELECT coin_id, name, supply, price, candle_start, candle_open, candle_high, candle_low"
+        "  FROM coins WHERE delisted_at IS NULL ORDER BY coin_id")
+    for row in rows:
+        state = CoinState(row["coin_id"], row["name"], row["supply"], row["price"])
+        # 진행 중이던 봉을 되살린다. 없으면 다음 observe()가 새로 연다.
+        if row["candle_start"] is not None:
+            state.bucket = int(row["candle_start"].timestamp())
+            state.open = row["candle_open"]
+            state.high = row["candle_high"]
+            state.low = row["candle_low"]
+        coins[state.coin_id] = state
+    print(f"🪙 코인 {len(coins)}종 복구")
+
+
+async def list_new_coin(conn) -> CoinState | None:
+    """신규 상장. 상장가는 평형가 고정, 총 발행량은 로그균등."""
+    conf = config["coin_config"]
+    used = {c.name for c in coins.values()}
+    pool = [n for n in conf["names"] if n not in used]
+    if not pool:
+        return None
+    name = random.choice(pool)
+    supply = int(math.exp(random.uniform(
+        math.log(conf["supply_min"]), math.log(conf["supply_max"]))))
+    price = float(conf["start_price"])
+    coin_id = await conn.fetchval(
+        "INSERT INTO coins (name, supply, price) VALUES ($1, $2, $3) RETURNING coin_id",
+        name, supply, price)
+    state = CoinState(coin_id, name, supply, price)
+    # 첫 틱을 기다리지 않고 봉을 바로 연다 — 안 그러면 상장 직후 몇 초 동안 차트가 비어 있다.
+    state.observe(time.time())
+    coins[coin_id] = state
+    print(f"🪙 신규 상장: {name} (발행량 {supply:,}, {price:.0f}P)")
+    return state
+
+
+async def delist_coin(conn, state: CoinState) -> None:
+    """상폐. 보유분은 전액 소각하고 환급하지 않는다(명세 4-1)."""
+    state.alive = False
+    coins.pop(state.coin_id, None)
+    await conn.execute(
+        "UPDATE coins SET delisted_at = now(), price = $2, candle_start = NULL WHERE coin_id = $1",
+        state.coin_id, state.price)
+    burned = await conn.fetchval(
+        "WITH gone AS (DELETE FROM coin_holdings WHERE coin_id = $1 RETURNING qty)"
+        " SELECT coalesce(sum(qty), 0) FROM gone", state.coin_id)
+    print(f"🪙 상폐: {state.name} ({state.price:.2f}P, 소각 {float(burned):.2f}개)")
+
+
+async def persist_candle(conn, state: CoinState, closed: tuple) -> None:
+    """마감된 봉을 저장하고 진행 중인 봉·가격을 갱신한다."""
+    bucket, o, h, low, c = closed
+    await conn.execute(
+        "INSERT INTO coin_candles (coin_id, bucket_start, o, h, l, c)"
+        " VALUES ($1, to_timestamp($2), $3, $4, $5, $6)"
+        " ON CONFLICT (coin_id, bucket_start) DO UPDATE"
+        "   SET h = greatest(coin_candles.h, excluded.h),"
+        "       l = least(coin_candles.l, excluded.l), c = excluded.c",
+        state.coin_id, bucket, o, h, low, c)
+    await conn.execute(
+        "UPDATE coins SET price = $2, candle_start = to_timestamp($3),"
+        "  candle_open = $4, candle_high = $5, candle_low = $6 WHERE coin_id = $1",
+        state.coin_id, state.price, state.bucket, state.open, state.high, state.low)
+    # 종목당 보존 상한 — 없으면 운영 기간에 비례해 늘어난다(소환 이력과 같은 이유).
+    await conn.execute(
+        "DELETE FROM coin_candles WHERE coin_id = $1 AND bucket_start < ("
+        "  SELECT min(bucket_start) FROM ("
+        "    SELECT bucket_start FROM coin_candles WHERE coin_id = $1"
+        "    ORDER BY bucket_start DESC LIMIT $2) recent)",
+        state.coin_id, config["coin_config"]["candle_keep_per_coin"])
+
+
+async def coin_engine() -> None:
+    """가격 갱신 루프.
+
+    **간격은 균등[1,3]초 난수이고, 그때 쉰 시간을 그대로 `dt` 로 쓴다.** 고정 간격이면
+    표시가 바뀌는 시점이 2초 격자에 100% 노출된다(실측: 간격의 57.6%가 정확히 2초).
+    **실제 경과시간(`now - last_tick`)을 재지 말 것** — 재기동 직후 첫 틱의 dt가 다운타임
+    전체가 되어 금지된 따라잡기를 한 번의 거대한 변동으로 저지른다(명세 2장·4-2).
+    """
+    conf = config["coin_config"]
+    delist_price = float(conf["delist_price"])
+    while True:
+        try:
+            nap = random.uniform(conf["tick_min_seconds"], conf["tick_max_seconds"])
+            await asyncio.sleep(nap)
+            dt = nap / 86400.0
+            root = math.sqrt(dt)
+            now = time.time()
+
+            global _coin_baseline, _coin_baseline_at
+            closed: list[tuple[CoinState, tuple]] = []
+            dying: list[CoinState] = []
+            for state in list(coins.values()):
+                async with state.lock:
+                    if not state.alive:
+                        continue
+                    v = state.volatility()
+                    state.price *= math.exp(
+                        (conf["c"] - conf["k"] * v * v) * dt + v * root * random.gauss(0.0, 1.0))
+                    if state.price <= delist_price:
+                        dying.append(state)
+                        continue
+                    if (shut := state.observe(now)) is not None:
+                        closed.append((state, shut))
+
+            # 이름이 동나면 `list_new_coin`이 계속 None을 준다. 그걸 확인하려고 매 틱마다
+            # 연결을 잡으면 1~3초마다 풀을 건드리게 되므로, **여기서 미리 걸러낸다.**
+            short = (len(coins) < conf["target_listed"]
+                     and len({c.name for c in coins.values()}) < len(conf["names"]))
+            stale = (now - _coin_baseline_at) > COIN_BASELINE_TTL
+            if not (closed or dying or short or stale):
+                continue
+
+            async with bot.pool.acquire() as conn:
+                for state, shut in closed:
+                    await persist_candle(conn, state, shut)
+                for state in dying:
+                    async with state.lock:
+                        await delist_coin(conn, state)
+                while (len(coins) < conf["target_listed"]
+                       and len({c.name for c in coins.values()}) < len(conf["names"])):
+                    if await list_new_coin(conn) is None:
+                        break
+                if stale:
+                    # 24시간 등락률 기준가. 화면이 요청할 때마다 재는 대신 여기서 한 번 잰다.
+                    rows = await conn.fetch(
+                        "SELECT DISTINCT ON (coin_id) coin_id, c FROM coin_candles"
+                        "  WHERE bucket_start >= to_timestamp($1)"
+                        "  ORDER BY coin_id, bucket_start ASC", now - 86400)
+                    _coin_baseline = {r["coin_id"]: float(r["c"]) for r in rows}
+                    _coin_baseline_at = now
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 루프가 죽으면 시장 전체가 멈춘다. 절대 밖으로 내보내지 않는다.
+            print(f"⚠️ 코인 엔진 오류: {exc}")
+            await asyncio.sleep(5)
+
+
+def start_coin_engine() -> None:
+    global _coin_engine
+    if _coin_engine is None or _coin_engine.done():
+        _coin_engine = asyncio.create_task(coin_engine())
+
+
+# ── 매매 ──────────────────────────────────────────────────────────────────────
+
+def quote_buy(state: CoinState, points: int) -> tuple[float, int, float]:
+    """`points` 를 넣었을 때 (받는 수량, 실제 차감액, 체결 후 가격).
+
+    `gross_pay` 는 `ceil`, 매도는 `floor` 다. **방향을 바꾸지 말 것** — 이 조합이 포인트
+    복제를 막는다(전수 탐색으로 왕복 최대이익 = 정확히 0 확인, 명세 3장).
+    """
+    k = state.k
+    qty = math.log1p(k * points / state.price) / k
+    pay = math.ceil(state.price * math.expm1(k * qty) / k)
+    return qty, pay, state.price + k * points
+
+
+def quote_sell(state: CoinState, qty: float) -> tuple[int, float]:
+    """`qty` 개를 팔았을 때 (수령 포인트, 체결 후 가격)."""
+    k = state.k
+    recv = math.floor(state.price * (1 - math.exp(-k * qty)) / k)
+    return recv, state.price * math.exp(-k * qty)
+
+
+# ── 웹 핸들러 ────────────────────────────────────────────────────────────────
+# 인증은 덱 편성과 같은 단기 토큰 링크다(`issue_deck_token`). 필요한 것이 "이 사람 + 이 언어
+# + 30분"으로 완전히 같아서 저장소를 함께 쓴다.
+
+def coin_labels(lang: str) -> dict:
+    """화면이 쓰는 문구. 한 번에 내려보내 왕복을 줄인다(덱 화면과 같은 방식)."""
+    return {key: get_msg(lang, key)
+            for key in config["messages"]["ko"] if key.startswith("web_coin_")}
+
+
+def coin_prices(held: dict[int, float] | None = None) -> list[dict]:
+    """시세 목록. **DB를 한 번도 보지 않는다** — 가격은 메모리가 정본이고 등락률 기준가는
+    엔진이 1분마다 갱신해둔 캐시를 쓴다. 화면 폴링이 이 경로만 타게 해서 정상 상태의
+    DB 부하를 0으로 만든다.
+    """
+    held = held or {}
+    out = []
+    for state in sorted(coins.values(), key=lambda s: s.coin_id):
+        base = _coin_baseline.get(state.coin_id)
+        qty = held.get(state.coin_id, 0.0)
+        out.append({
+            "id": state.coin_id,
+            "name": state.name,
+            "price": coin_display(state.price),
+            "supply": state.supply,
+            "change": None if not base else round((state.price / base - 1) * 100, 2),
+            "qty": qty,
+            "value": coin_display(quote_sell(state, qty)[0]) if qty > 0 else 0,
+            # 진행 중인 봉 — 차트가 마지막 봉만 이어 그리면 되므로 다시 조회할 필요가 없다.
+            "live": None if state.bucket is None else {
+                "t": state.bucket, "o": state.open, "h": state.high,
+                "l": state.low, "c": state.price},
+        })
+    return out
+
+
+async def coin_snapshot(conn, user_id: int, lang: str) -> dict:
+    """시세 + 내 보유 + 포인트 + 쿨다운. 화면이 그릴 수 있는 형태로 통째로."""
+    conf = config["coin_config"]
+    row = await conn.fetchrow(
+        "SELECT points, coin_cooldown_until FROM users WHERE user_id = $1", user_id)
+    points = int(row["points"]) if row else 0
+    until = row["coin_cooldown_until"] if row else None
+    held = {r["coin_id"]: float(r["qty"]) for r in await conn.fetch(
+        "SELECT coin_id, qty FROM coin_holdings WHERE user_id = $1 AND qty > 0", user_id)}
+
+    return {
+        "points": points,
+        "coins": coin_prices(held),
+        "cooldown_seconds": max(0, int(until.timestamp() - time.time())) if until else 0,
+        "cooldown_minutes": conf["trade_cooldown_seconds"] // 60,
+        "delist_price": conf["delist_price"],
+        "min_order_points": conf["min_order_points"],
+        "max_order_fraction": conf["max_order_fraction"],
+        "messages": coin_labels(lang),
+    }
+
+
+async def handle_coin_page(request):
+    if resolve_deck_token(request) is None:
+        return web.Response(text=get_msg("en-US", "web_coin_expired"), status=403)
+    return html_page("coin_page.html")
+
+
+async def handle_coin_data(request):
+    """전체 스냅샷(포인트·보유·쿨다운 포함). **화면 진입과 거래 직후에만** 부른다.
+
+    폴링은 `/api/coin/prices` 가 받는다 — 이쪽은 DB를 세 번 보므로 주기 호출에 쓰면
+    보고만 있는 사람들이 연결 풀을 말린다.
+    """
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, lang = resolved
+    if limited := rate_limited("coin_read", user_id, burst=6, per_second=0.5):
+        return limited
+    async with bot.pool.acquire() as conn:
+        return web.json_response(await coin_snapshot(conn, user_id, lang))
+
+
+async def handle_coin_prices(request):
+    """시세만. **DB를 보지 않으므로** 얼마나 자주 불려도 Neon에 부하가 없다."""
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    if limited := rate_limited("coin_poll", resolved[0], burst=20, per_second=2):
+        return limited
+    return web.json_response({"coins": coin_prices(),
+                              "seconds": config["coin_config"]["candle_seconds"]})
+
+
+async def handle_coin_candles(request):
+    """한 종목의 5분봉. 공백 구간은 **없는 채로** 내려보낸다 — 지어내지 않는다(명세 4-2)."""
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, _ = resolved
+    if limited := rate_limited("coin_read", user_id, burst=10, per_second=2):
+        return limited
+    try:
+        coin_id = int(request.query.get("id", ""))
+    except ValueError:
+        return web.json_response({"error": "bad_request"}, status=400)
+    async with bot.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT extract(epoch FROM bucket_start)::bigint AS t, o, h, l, c"
+            "  FROM coin_candles WHERE coin_id = $1 ORDER BY bucket_start DESC LIMIT 288",
+            coin_id)
+    live = coins.get(coin_id)
+    out = [{"t": r["t"], "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"]}
+           for r in reversed(rows)]
+    # 진행 중인 봉도 같이 보여준다. 마감 전이라 DB에는 아직 없다.
+    if live is not None and live.bucket is not None:
+        out.append({"t": live.bucket, "o": live.open, "h": live.high,
+                    "l": live.low, "c": live.price})
+    return web.json_response({
+        "candles": out,
+        "seconds": config["coin_config"]["candle_seconds"],
+        "alive": live is not None,
+    })
+
+
+def _cooldown_error(lang: str, seconds: int) -> web.Response:
+    return web.json_response(
+        {"error": "cooldown", "cooldown_seconds": seconds,
+         "message": get_msg(lang, "web_coin_cooldown_blocked", mmss=mmss(seconds))},
+        status=409)
+
+
+def mmss(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+async def handle_coin_trade(request):
+    """매수/매도. 검증 → 포인트·보유량 → 가격 → 상폐를 **한 트랜잭션**으로 끝낸다(명세 3장).
+
+    쿨다운 검사를 조건부 UPDATE 안에 넣는 이유: 따로 읽고 나중에 쓰면 같은 사람이 두 요청을
+    동시에 보냈을 때 **둘 다 통과**한다. 잔액 검사(`points >= 비용`)와 같은 이유다.
+    """
+    resolved = resolve_deck_token(request)
+    if resolved is None:
+        return web.json_response({"error": "expired"}, status=403)
+    user_id, lang = resolved
+    if limited := rate_limited("coin_trade", user_id, burst=3, per_second=0.5):
+        return web.json_response(
+            {"error": "busy", "message": get_msg(lang, "web_coin_err_busy")}, status=429)
+
+    body = await _body(request)
+    side = body.get("side")
+    try:
+        coin_id = int(body.get("coin_id"))
+        amount = float(body.get("amount"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_request"}, status=400)
+    if side not in ("buy", "sell") or not (amount > 0) or not math.isfinite(amount):
+        return web.json_response({"error": "bad_request"}, status=400)
+
+    state = coins.get(coin_id)
+    if state is None or not state.alive:
+        return web.json_response(
+            {"error": "delisted", "message": get_msg(lang, "web_coin_err_delisted")}, status=410)
+
+    conf = config["coin_config"]
+    cooldown = conf["trade_cooldown_seconds"]
+
+    async with state.lock:
+        if not state.alive:
+            return web.json_response(
+                {"error": "delisted", "message": get_msg(lang, "web_coin_err_delisted")},
+                status=410)
+        if side == "buy":
+            spend = int(amount)
+            if spend < conf["min_order_points"]:
+                return web.json_response(
+                    {"error": "min", "message": get_msg(lang, "web_coin_err_min",
+                                                        min=conf["min_order_points"])}, status=400)
+            qty, pay, after = quote_buy(state, spend)
+        else:
+            qty = amount
+            pay, after = quote_sell(state, qty)
+        if qty > state.supply * conf["max_order_fraction"]:
+            return web.json_response(
+                {"error": "max", "message": get_msg(
+                    lang, "web_coin_err_max",
+                    percent=round(conf["max_order_fraction"] * 100))}, status=400)
+
+        previous = state.price      # 트랜잭션이 되돌아가면 메모리 가격도 되돌린다
+        try:
+            async with bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    if side == "buy":
+                        got = await conn.fetchrow(
+                            "UPDATE users SET points = points - $2,"
+                            "   coin_cooldown_until = now() + make_interval(secs => $3)"
+                            " WHERE user_id = $1 AND points >= $2"
+                            "   AND (coin_cooldown_until IS NULL OR coin_cooldown_until <= now())"
+                            " RETURNING points", user_id, pay, float(cooldown))
+                        if got is None:
+                            return await _trade_refused(conn, user_id, lang, "web_coin_err_poor")
+                        await conn.execute(
+                            "INSERT INTO coin_holdings (user_id, coin_id, qty) VALUES ($1, $2, $3)"
+                            " ON CONFLICT (user_id, coin_id) DO UPDATE"
+                            "   SET qty = coin_holdings.qty + excluded.qty",
+                            user_id, coin_id, qty)
+                    else:
+                        left = await conn.fetchval(
+                            "UPDATE coin_holdings SET qty = qty - $3"
+                            " WHERE user_id = $1 AND coin_id = $2 AND qty >= $3 RETURNING qty",
+                            user_id, coin_id, qty)
+                        if left is None:
+                            return await _trade_refused(conn, user_id, lang, "web_coin_err_qty")
+                        got = await conn.fetchrow(
+                            "UPDATE users SET points = points + $2,"
+                            "   coin_cooldown_until = now() + make_interval(secs => $3)"
+                            " WHERE user_id = $1"
+                            "   AND (coin_cooldown_until IS NULL OR coin_cooldown_until <= now())"
+                            " RETURNING points", user_id, pay, float(cooldown))
+                        if got is None:
+                            # 쿨다운에 걸렸다. **예외로 빠져나가야** 앞서 깎은 보유량까지 함께
+                            # 되돌아간다 — 여기서 그냥 return하면 차감이 커밋된다.
+                            raise _Cooldown(await _cooldown_left(conn, user_id))
+                        if left <= 1e-9:
+                            await conn.execute(
+                                "DELETE FROM coin_holdings WHERE user_id = $1 AND coin_id = $2",
+                                user_id, coin_id)
+
+                    # 가격은 DB가 아니라 메모리가 정본이다. 다음 자연 틱이 여기서 이어간다.
+                    state.price = after
+                    state.observe(time.time())
+                    if state.price <= conf["delist_price"]:
+                        # 매도로 상폐선을 깬 경우 — 체결과 상폐를 한 번에 끝낸다(명세 4-1).
+                        await delist_coin(conn, state)
+                    else:
+                        await conn.execute(
+                            "UPDATE coins SET price = $2 WHERE coin_id = $1", coin_id, state.price)
+        except _Cooldown as stop:
+            state.price = previous
+            return _cooldown_error(lang, stop.seconds)
+        except Exception:
+            state.price = previous
+            state.alive = True
+            coins.setdefault(coin_id, state)
+            raise
+
+    key = "web_coin_bought" if side == "buy" else "web_coin_sold"
+    return web.json_response({
+        "ok": True,
+        "points": int(got["points"]),
+        "cooldown_seconds": cooldown,
+        "message": get_msg(lang, key, name=state.name,
+                           qty=f"{qty:,.2f}", points=f"{pay:,}"),
+    })
+
+
+class _Cooldown(Exception):
+    """매도 도중 쿨다운에 걸렸을 때 트랜잭션을 되돌리는 신호."""
+
+    def __init__(self, seconds: int):
+        super().__init__(seconds)
+        self.seconds = seconds
+
+
+async def _cooldown_left(conn, user_id: int) -> int:
+    until = await conn.fetchval(
+        "SELECT coin_cooldown_until FROM users WHERE user_id = $1", user_id)
+    return max(0, int(until.timestamp() - time.time())) if until else 0
+
+
+async def _trade_refused(conn, user_id: int, lang: str, key: str) -> web.Response:
+    """조건부 UPDATE가 0행을 돌려준 이유를 가려낸다 — 쿨다운인지, 잔액/수량인지.
+
+    한 쿼리가 두 조건을 같이 보므로 실패했을 때 어느 쪽인지 알 수 없다. 유저에게
+    "포인트가 모자랍니다"와 "아직 쿨다운"은 전혀 다른 안내라 반드시 갈라줘야 한다.
+    """
+    left = await _cooldown_left(conn, user_id)
+    if left > 0:
+        return _cooldown_error(lang, left)
+    return web.json_response({"error": "refused", "message": get_msg(lang, key)}, status=400)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 async def start_web_server():
     """Render는 웹 서비스가 PORT를 열고 있어야 해서, 헬스체크 겸 덱 편성 페이지를 여기서 서빙한다.
 
@@ -2122,9 +2749,11 @@ async def start_web_server():
     봇도 같이 멈춘다. 그래서 UptimeRobot 같은 외부 모니터가 여기를 주기적으로 찔러줘야 한다.
     """
     start_janitor()
+    start_coin_engine()
     app = web.Application()
     app.router.add_get("/", lambda req: web.Response(text="Arcade bot is online!"))
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/name_fit.js", lambda req: web.FileResponse("name_fit.js"))
     app.router.add_get("/deck", handle_deck_page)
     app.router.add_get("/api/deck", handle_deck_data)
     app.router.add_get("/api/history", handle_match_history)
@@ -2152,6 +2781,11 @@ async def start_web_server():
     app.router.add_post("/api/match/pick", handle_match_pick)
     app.router.add_post("/api/deck", handle_deck_save)
     app.router.add_post("/api/deck/reset-enhance", handle_deck_reset_enhance)
+    app.router.add_get("/coin", handle_coin_page)
+    app.router.add_get("/api/coin", handle_coin_data)
+    app.router.add_get("/api/coin/prices", handle_coin_prices)
+    app.router.add_get("/api/coin/candles", handle_coin_candles)
+    app.router.add_post("/api/coin/trade", handle_coin_trade)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2213,6 +2847,35 @@ async def do_arcade(interaction: discord.Interaction):
         style=discord.ButtonStyle.link,
         label=get_msg(lang, "arcade_link_button"),
         url=f"{web_base_url()}/lobby?token={token}",
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+async def do_coin(interaction: discord.Interaction):
+    """코인 거래소 링크 발급. 패널 버튼에서 호출한다.
+
+    **쿨다운을 링크 발급 시점에 미리 알린다.** 사고 나서야 "5분 못 삽니다"를 보면 늦다 —
+    거래소에 들어가기 전에 알고 있어야 한 방에 얼마를 넣을지 정할 수 있다. 화면 안에서도
+    다시 안내하지만(팝업·배지), 첫 고지는 여기가 맞다.
+    """
+    await interaction.response.defer(ephemeral=True)
+    lang = resolve_lang(interaction)
+
+    token = issue_deck_token(interaction.user.id, lang)
+    conf = config["coin_config"]
+    embed = discord.Embed(
+        title=get_msg(lang, "coin_link_title"),
+        description=get_msg(lang, "coin_link_desc",
+                            minutes=config["web_config"]["token_ttl_seconds"] // 60,
+                            cooldown=conf["trade_cooldown_seconds"] // 60),
+        color=discord.Color.gold(),
+    )
+    # 주소를 본문에 적지 않고 링크 버튼으로 단다 — 토큰이 붙어 길고, 모바일에서 줄이 넘친다.
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.link,
+        label=get_msg(lang, "coin_link_button"),
+        url=f"{web_base_url()}/coin?token={token}",
     ))
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -3041,6 +3704,12 @@ def sweep_expired(now: float) -> None:
     for user_id, read_at in list(_lobby_reads.items()):
         if now - read_at > cooldown:
             del _lobby_reads[user_id]
+    # 빈도 제한 버킷도 같이 치운다 — 한동안 안 쓴 버킷은 어차피 가득 찬 상태라 지워도 같다
+    # (안 지우면 사람이 드나들 때마다 계속 쌓이는 자료구조가 된다).
+    idle_since = time.monotonic() - 600
+    for key, (_, last) in list(_rate_buckets.items()):
+        if last < idle_since:
+            del _rate_buckets[key]
 
 
 def start_janitor() -> None:
@@ -3196,15 +3865,17 @@ class ArcadePanelView(discord.ui.View):
     def __init__(self, lang: str):
         super().__init__(timeout=None)
         self.lang = lang
-        # **줄은 직접 나눈다.** 디스코드는 한 줄에 버튼 5개까지라, 6개를 그냥 넣으면
-        # discord.py가 5 + 1로 채워서 마지막 버튼(포인트) 하나만 덩그러니 아랫줄에 떨어진다.
-        # 3 + 3으로 나눠 "매일 하는 것 / 관리·대결"이 줄로도 구분되게 한다.
+        # **줄은 직접 나눈다.** 디스코드는 한 줄에 버튼 5개까지라, 그냥 넣으면 5 + 나머지로
+        # 채워져서 마지막 버튼 하나가 덩그러니 아랫줄에 떨어진다(실제로 그렇게 보였다).
+        # 3 + 4로 나눠 "매일 하는 것 / 자산·대결"이 줄로도 구분되게 한다.
+        # 코인은 포인트를 쓰고 버는 기능이라 포인트 옆에 둔다.
         for row, key, style, handler in (
             (0, "panel_checkin", discord.ButtonStyle.success, self.on_checkin),
             (0, "panel_summon", discord.ButtonStyle.primary, self.on_summon),
             (0, "panel_summon_multi", discord.ButtonStyle.primary, self.on_summon_multi),
             (1, "panel_deck", discord.ButtonStyle.secondary, self.on_deck),
             (1, "panel_arcade", discord.ButtonStyle.danger, self.on_arcade),
+            (1, "panel_coin", discord.ButtonStyle.primary, self.on_coin),
             (1, "panel_points", discord.ButtonStyle.secondary, self.on_points),
         ):
             label = get_msg(lang, key, count=config["summon_config"]["multi_count"])                 if key == "panel_summon_multi" else get_msg(lang, key)
@@ -3232,6 +3903,9 @@ class ArcadePanelView(discord.ui.View):
 
     async def on_arcade(self, interaction: discord.Interaction):
         await do_arcade(interaction)
+
+    async def on_coin(self, interaction: discord.Interaction):
+        await do_coin(interaction)
 
 
 async def setup_arcade_panel(guild: discord.Guild) -> int:
