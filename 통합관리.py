@@ -439,6 +439,8 @@ async def process_notices():
         print("❌ notice_config.webhook_url이 설정되어 있지 않습니다.")
         return
 
+    # 채널 이름은 **설정에 둔다** — 디스코드에서 이름을 바꿨을 때 코드를 고치지 않도록.
+    notice_channel = config.get("notice_config", {}).get("channel", "📢announcement")
     recent_urls, target_channel = [], None
     categories = config.get("rules_config", {}).get("categories", {})
     
@@ -446,7 +448,7 @@ async def process_notices():
         cat_name = categories.get("en")
         category = discord.utils.get(guild.categories, name=cat_name)
         if category:
-            target_channel = discord.utils.get(category.text_channels, name="📢공지사항")
+            target_channel = discord.utils.get(category.text_channels, name=notice_channel)
             if target_channel: break
 
     if target_channel:
@@ -991,7 +993,8 @@ async def on_message_delete(message):
     except Exception:
         pass
 
-# 실제 "제재"로 취급하는 조치만 카운트 (차단해제/닉네임변경/역할제거는 제외)
+# 실제 "제재"로 취급하는 조치만 카운트 (차단해제/닉네임변경은 제외).
+# 역할 제거는 아예 기록하지 않으므로 여기 올 일이 없다.
 SANCTION_TITLES = {"🔨 유저 추방 (Kick)", "⛔ 유저 차단 (Ban)", "⏳ 타임아웃 적용"}
 
 async def rebuild_sanction_counts(guild):
@@ -1113,19 +1116,9 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
                 embed.add_field(name="작성한 변경 사유", value=reason, inline=False)
                 should_send = True
 
-    # 5. 역할 제거 (봇이 제거한 경우는 제외)
-    elif entry.action == discord.AuditLogAction.member_role_update:
-        if moderator.bot:
-            return
-
-        removed_roles = getattr(entry.before, 'roles', [])
-        if removed_roles:
-            embed.title = "➖ 역할 강제 제거"
-            embed.color = discord.Color.dark_theme()
-            role_names = ", ".join([role.name for role in removed_roles])
-            embed.add_field(name="제거된 역할", value=role_names, inline=False)
-            embed.add_field(name="작성한 사유", value=reason, inline=False)
-            should_send = True
+    # **역할 제거는 기록하지 않는다.** 규칙 동의/철회처럼 평상시에 오가는 조작이라
+    # 로그가 그걸로 채워져 정작 봐야 할 제재가 묻힌다. (`member_role_update`는 아예
+    # 분기를 두지 않으므로 `should_send`가 False로 남아 아무것도 나가지 않는다.)
 
     # 통합 '관리-로그' 채널로 전송
     if should_send:
