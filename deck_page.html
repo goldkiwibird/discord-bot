@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Deck</title>
+<script src="/name_fit.js" defer></script>
 <style>
   :root {
     --bg: #1b1d24; --panel: #23262f; --line: #343845; --text: #e7e9ee; --dim: #9aa0ae;
@@ -48,8 +49,10 @@
   .match.win .result { color: var(--ok); }
   .match.loss .result { color: var(--bad); }
   .match.draw .result, .match.cancelled .result { color: var(--dim); }
-  .vs { font-size: 13px; flex: 1; min-width: 120px; }
-  .vs .dim { color: var(--dim); }
+  .vs { font-size: 13px; flex: 1 1 160px; min-width: 0;
+        display: flex; align-items: center; gap: 4px; }
+  .vs .dim { color: var(--dim); flex: none; }
+  .vs .fit-name { flex: 1; }
   .delta { font-size: 13px; font-weight: 600; }
   .delta.up { color: var(--ok); } .delta.down { color: var(--bad); } .delta.flat { color: var(--dim); }
   .when { font-size: 12px; color: var(--dim); }
@@ -85,13 +88,17 @@
   .filters select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
                      border-radius: 6px; padding: 5px 8px; font-size: 13px; }
 
-  /* ══ 모바일: 누를 것들만 손가락 크기로 ═══════════════════════════════
-     레이아웃은 손대지 않는다 — auto-fill 그리드 + flex-wrap이라 375px에서도 가로 스크롤
-     없이 2열로 깔린다(실측). 탭 38px / 셀렉트 28px만 작아서 잘못 눌리기 쉬웠다. */
+  /* ══ 모바일: 조작 버튼과 전적 ══════════════════════════════════════ */
   @media (max-width: 760px) {
     .viewtab, .tab, button.action, .reset-btn { min-height: 44px; }
     .filters select { min-height: 44px; padding: 8px; font-size: 14px; }
     .grid { padding: 12px; gap: 10px; }
+    /* 이름은 한 줄의 폭을 확보하고, 포인트는 기존 글자 크기로 따로 표시한다. */
+    .match { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+    .match .result { grid-column: 1; grid-row: 1; }
+    .match .delta { grid-column: 2; grid-row: 1; text-align: right; }
+    .match .vs { grid-column: 1 / -1; grid-row: 2; }
+    .match .when { grid-column: 1 / -1; grid-row: 3; }
   }
 
   .grid { display: grid; gap: 12px; padding: 16px;
@@ -280,7 +287,8 @@ function renderHistory() {
 
     el.innerHTML =
       `<span class="result">${labels[m.result]}</span>` +
-      `<span class="vs"><span class="dim">${data.messages.web_history_opponent}</span> ${escapeHtml(name)}</span>` +
+      `<span class="vs"><span class="dim">${data.messages.web_history_opponent}</span>` +
+        `<span class="fit-name">${escapeHtml(name)}</span></span>` +
       delta +
       `<span class="when">${new Date(m.played_at).toLocaleString()}</span>`;
     box.appendChild(el);
