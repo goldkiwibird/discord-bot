@@ -28,7 +28,17 @@
   .shake { animation: shake .45s cubic-bezier(.36,.07,.19,.97); }
 
   #app { display: grid; grid-template-columns: 1fr 220px; height: 100%; }
-  @media (max-width: 760px) { #app { grid-template-columns: 1fr; } .panel { display: none; } }
+
+  /* 모바일 전용 상단 바 / 시트 배경. PC에서는 둘 다 안 보인다.
+     실제 모바일 규칙은 **스타일시트 맨 끝**에 모아뒀다 (이유는 그쪽 주석 참고). */
+  .topbar { display: none; align-items: center; gap: 10px; padding: 8px 12px;
+            background: var(--panel); border-bottom: 1px solid var(--line); }
+  .topbar .barinfo { flex: 1; min-width: 0; }
+  .menubtn { flex: none; width: 44px; height: 44px; border-radius: 10px; font-size: 19px;
+             background: var(--bg); border: 1px solid var(--line); color: var(--text);
+             font-family: inherit; cursor: pointer; }
+  .sheetveil { display: none; position: fixed; inset: 0; z-index: 55;
+               background: rgba(8,9,13,.55); }
 
   /* 보드(= 패널을 뺀 화면)는 하나의 좌표계다. 손패는 아래 레일에 깔고 가운데는 비워 둔다 —
      VS와 내민 카드가 **보드 정중앙**을 기준으로 놓여야 하기 때문. */
@@ -83,6 +93,7 @@
   /* hover에 drop-shadow를 쓰면 알파 모양을 따라 블러를 계산하느라 매번 새 레이어가 생긴다.
      카드는 프레임 PNG라 box-shadow는 사각형으로 어긋나므로, 블러가 없는 밝기 필터로 대신한다. */
   .hand.me .card.pickable { will-change: transform; }
+  .hand.me .card.pickable:active { transform: translateY(-10px) scale(1.05); }
   .hand.me .card.pickable:hover { transform: translateY(-10px) scale(1.05);
                                    filter: brightness(1.15) saturate(1.1); }
   .card.gone { opacity: 0; transform: scale(.6); pointer-events: none; }
@@ -126,8 +137,11 @@
 
   /* 판정은 보드 위에 겹쳐 띄웠다가 걷는다. 손패 줄에 끼워 넣으면 카드를 작게 만들 수밖에 없다.
      **화면 전체가 아니라 보드에만** 깔아야 VS가 패널을 뺀 화면의 정중앙에 온다. */
+  /* **배경을 어둡게 덮지 않는다.** 예전에는 거의 불투명한 검정을 깔아서, 카드를 서로 내는
+     순간 골라둔 배경 영상이 통째로 사라졌다. 대신 안쪽 글자에 그림자를 줘서 밝은 배경에서도
+     읽히게 한다 (자기 그림자를 따로 가진 글자 — 승패, 빛나는 수치 — 는 그대로 쓴다). */
   .clashLayer { position: absolute; inset: 0; z-index: 30;
-                background: radial-gradient(ellipse at center, rgba(4,6,10,.9), rgba(4,6,10,.98));
+                text-shadow: 0 1px 3px rgba(0,0,0,.95), 0 0 12px rgba(0,0,0,.7);
                 animation: fadeIn .18s ease-out both; }
   /* 판정 중에는 가운데 안내 문구를 감춘다 — 안 그러면 VS 뒤에 글자가 비쳐 지저분하다.
      (클래스를 .board에 두는 이유: .stage 안쪽은 스냅샷마다 다시 그려진다) */
@@ -339,14 +353,16 @@
 
   /* ── 대기실 ─────────────────────────────────
      대결이 시작되기 전까지 보드를 덮는다. 시작하면 사라지고 그 아래 판이 드러난다. */
-  /* 배경 영상이 대기실에서도 보이도록 반투명으로 둔다. 완전 불투명이면 방에 들어가
-     시작을 누를 때까지 어떤 배경을 골랐는지 확인할 수가 없다. */
-  .waitroom { position: absolute; inset: 0; background: rgba(17, 19, 26, .86); display: flex;
+  /* **배경을 덮지 않는다.** 예전에는 86% 검정을 깔아 방에 들어가자마자 화면이 어두웠다 —
+     배경 영상을 고르는 의미가 없었다. 자리 상자는 제 배경(--panel)이 불투명해 그대로 읽히고,
+     덩그러니 놓인 글자만 그림자로 받쳐준다(밝은 영상 위의 흐린 회색은 안 읽힌다). */
+  .waitroom { position: absolute; inset: 0; display: flex;
               flex-direction: column; align-items: center; justify-content: center; gap: 22px;
-              padding: 24px; text-align: center; z-index: 5; }
+              padding: 24px; text-align: center; z-index: 5;
+              text-shadow: 0 1px 3px rgba(0,0,0,.95), 0 0 12px rgba(0,0,0,.7); }
   .waitroom h2 { margin: 0; font-size: 20px; color: var(--dim); font-weight: 600; }
   .seats { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; justify-content: center; }
-  .seat { min-width: 200px; background: var(--panel); border: 2px solid var(--line);
+  .seat { text-shadow: none; min-width: 200px; background: var(--panel); border: 2px solid var(--line);
           border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column;
           align-items: center; gap: 8px; }
   /* 자리 색은 **왼쪽/오른쪽으로 고정**한다 — 방장은 자리와 무관하게 배지로 표시한다
@@ -367,7 +383,7 @@
   .seat .kick { font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
                 background: transparent; border: 1px solid var(--bad); color: var(--bad); }
   .vsmark { font-size: 26px; font-weight: 800; color: var(--dim); }
-  .bigbtn { padding: 12px 34px; border-radius: 10px; border: none; font-size: 17px;
+  .bigbtn { text-shadow: none; padding: 12px 34px; border-radius: 10px; border: none; font-size: 17px;
             font-weight: 700; cursor: pointer; background: var(--ok); color: #10121a; }
   .bigbtn.off { background: var(--line); color: var(--dim); cursor: not-allowed; }
   .bigbtn.ready { background: var(--me); color: #fff; }
@@ -382,8 +398,14 @@
   .roomctl button.leave:hover { border-color: var(--bad); color: var(--bad); }
 
   /* 겹쳐 뜨는 창 (초대 / 확인) */
+  /* z-index 70: 모바일 시트(60)보다 위여야 초대·추방 확인 창이 시트에 가려지지 않는다.
+     `align-items: center` + `margin: auto`인 이유는 **창이 화면보다 높을 때**다 — center만
+     쓰면 넘친 부분이 위로 잘려 나가 스크롤로도 닿을 수 없다(모바일에서 키보드가 올라오면
+     실제로 그렇게 된다). auto 마진은 자리가 남을 때만 가운데로 밀어준다. */
   .veil { position: fixed; inset: 0; background: rgba(8,9,13,.72); display: flex;
-          align-items: center; justify-content: center; padding: 20px; z-index: 40; }
+          align-items: flex-start; justify-content: center; padding: 20px; z-index: 70;
+          overflow-y: auto; }
+  .dialog { margin: auto; }
   .dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
             padding: 18px; width: min(360px, 100%); display: flex; flex-direction: column; gap: 12px; }
   .dialog h3 { margin: 0; font-size: 16px; }
@@ -401,10 +423,74 @@
            background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
            padding: 10px 16px; font-size: 13px; z-index: 50; }
   .toast.bad { border-color: var(--bad); color: var(--bad); }
+
+  /* ══ 모바일 (가로 760px 이하) ═══════════════════════════════════════════
+     **이 블록은 반드시 스타일시트 맨 끝에 있어야 한다.** 특이도가 같은 규칙은 뒤에 온 쪽이
+     이기므로, 앞쪽에 두면 나중에 나오는 `.panel { ... display: flex; ... }`가 그대로 덮어쓴다
+     — 실제로 그래서 모바일 규칙이 통째로 죽어 있었고, 화면의 76%를 관전자 목록이 먹고
+     준비/시작 버튼은 잘려서 누를 수조차 없었다(`body{overflow:hidden}`이라 스크롤도 안 된다).
+     PC 화면은 이 블록 밖을 하나도 건드리지 않으므로 그대로다. */
+  @media (max-width: 760px) {
+    /* 위: 방 정보 바 / 아래: 보드. 패널은 아래 시트로 빠지므로 칸을 차지하지 않는다. */
+    #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .topbar { display: flex; }
+    /* PC에서는 세로로 쌓이는 방 정보를 가로로 눕힌다 */
+    .topbar .info { flex-direction: row; align-items: baseline; gap: 10px; min-width: 0; }
+    .topbar .roomname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .topbar .wager, .topbar .timer { flex: none; }
+
+    /* **패널을 지우지 않고 시트로 바꾼다.** 여기에 방 나가기·초대·관전으로 물러나기·추방·
+       관전자 목록이 들어 있어서, 숨기면 모바일에서 방을 빠져나갈 방법이 없어진다. */
+    .panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; max-height: 70vh;
+             border-left: none; border-top: 1px solid var(--line);
+             border-radius: 14px 14px 0 0;
+             padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+             box-shadow: 0 -14px 34px rgba(0,0,0,.55);
+             transform: translateY(101%); transition: transform .22s ease; }
+    #app.sheet .panel { transform: none; }
+    #app.sheet .sheetveil { display: block; }
+
+    /* 보드는 가장자리를 아껴서 손패 다섯 장이 들어갈 폭을 번다 */
+    .board { padding: 8px; }
+    .rail { left: 6px; right: 6px; }
+    /* 손패는 **가로로도 세로로도** 들어가야 한다. 폭 하한 64px을 고집했더니 360px 화면에서
+       다섯 번째 카드가 12px 잘렸고(필요 344px / 가능 332px), 반대로 폭만 보고 키우면
+       가로 모드(높이 360px)에서 위아래 손패가 서로 겹쳤다. 그래서 둘 다 막는다 —
+       가로는 레일 폭을 5등분한 값, 세로는 두 줄(이름표 포함)이 보드에 들어가는 값이다. */
+    .hand .card { width: min(clamp(44px, calc(20vw - 11px), 140px),
+                             calc((100vh - 170px) / 3)); }
+
+    /* 손가락 기준 최소 크기 */
+    .roomctl button, .bigbtn { min-height: 44px; }
+    .speclist .who .kick { min-height: 32px; padding: 4px 10px; font-size: 11px; }
+    .seat .sit { min-height: 36px; }
+  }
+
+  /* ── 가로 모드처럼 **높이가 짧은** 화면 ──────────────────────────────────
+     세로(375x812)에서는 손패 사이가 411px이나 남지만 가로(740x360)에서는 24px뿐이라,
+     가운데 점수판(93px)이 위아래 손패를 덮었다(실측). 카드를 한 번 더 줄여 가운데를
+     벌리고, 그 안에 들어갈 글자도 같이 줄인다. */
+  @media (max-width: 900px) and (max-height: 480px) {
+    .hand .card { width: min(clamp(40px, calc(20vw - 11px), 140px),
+                             calc((100vh - 230px) / 3)); }
+    .nameplate .who { font-size: clamp(14px, 2.4vw, 20px); }
+    .scoreline .nums { font-size: 24px; }
+    .scoreline .round { font-size: 11px; }
+    .scoreline .nick { font-size: 12px; }
+    .stage .hint { font-size: 11px; }
+    /* 덱 선택도 세로로 3벌을 쌓으므로 카드를 줄여야 화면에 들어간다 */
+    .deckopt .dcards .card { width: 40px; }
+    .deckpick h3 { font-size: 14px; }
+  }
 </style>
 </head>
 <body>
 <div id="app">
+  <!-- 모바일에서만 보이는 상단 바. 방 정보(#info)가 여기로 **옮겨 온다**(복제가 아니다). -->
+  <div class="topbar" id="topbar">
+    <div class="barinfo" id="barInfo"></div>
+    <button class="menubtn" id="menuBtn" type="button" aria-label="menu">&#9776;</button>
+  </div>
   <div class="board" id="board">
     <video class="bgvid" id="bgvid" autoplay muted loop playsinline preload="auto"></video>
     <div class="waitroom" id="waitroom" hidden>
@@ -428,8 +514,8 @@
       <div class="nameplate me"><span class="who" id="myName">—</span></div>
     </div>
   </div>
-  <aside class="panel">
-    <div class="info">
+  <aside class="panel" id="panel">
+    <div class="info" id="info">
       <div class="roomname" id="roomName"></div>
       <div class="wager" id="wager" hidden></div>
       <div class="timer" id="timer" hidden></div>
@@ -445,6 +531,7 @@
     </div>
     <div class="status" id="status"></div>
   </aside>
+  <div class="sheetveil" id="sheetveil"></div>
 </div>
 
 <script>
@@ -954,6 +1041,7 @@ let veil = null;
 function closeDialog() { if (veil) { veil.remove(); veil = null; } }
 function openDialog({ title, body, confirm, onReady, onConfirm }) {
   closeDialog();
+  toggleSheet(false);
   veil = document.createElement("div");
   veil.className = "veil";
   veil.innerHTML =
@@ -1082,6 +1170,23 @@ function connect() {
 }
 
 // 스냅샷은 방(대기실 + 대결)으로 오지만, 폴링 경로 등에서 매치만 올 수도 있게 나눠 받는다
+// ── 모바일 ────────────────────────────────────────────────────────────────
+// 방 정보(이름·판돈·타이머)는 화면 폭에 따라 **같은 요소를 옮겨 다닌다.** 두 벌을 두고
+// 양쪽에 그리면 렌더링 코드가 한쪽을 빠뜨리기 쉽다. 화면을 돌리면 다시 제자리로 간다.
+const MOBILE = window.matchMedia("(max-width: 760px)");
+function placeInfo() {
+  const info = $("info"), panel = $("panel");
+  if (MOBILE.matches) $("barInfo").appendChild(info);
+  else panel.insertBefore(info, panel.firstElementChild);
+}
+MOBILE.addEventListener("change", placeInfo);
+
+// 우측 패널은 모바일에서 아래 시트가 된다 (없애면 방을 나갈 방법이 없다)
+function toggleSheet(open) {
+  const app = $("app");
+  app.classList.toggle("sheet", open === undefined ? !app.classList.contains("sheet") : open);
+}
+
 function route(payload) {
   if (payload && payload.type === "room") applyRoom(payload);
   else apply(payload);
@@ -1096,6 +1201,9 @@ function route(payload) {
   }
   labels = await res.json();
   EXT = labels.image_ext || EXT;
+  placeInfo();
+  $("menuBtn").onclick = () => toggleSheet();
+  $("sheetveil").onclick = () => toggleSheet(false);
   $("inviteBtn").onclick = openInvite;
   $("standBtn").onclick = () => roomPost("seat", { sit: false });
   $("leaveBtn").onclick = async () => { await roomPost("leave"); goLobby(); };
