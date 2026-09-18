@@ -282,7 +282,7 @@ async def ensure_schema(conn):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS coins (
             coin_id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
+            hero_id INT NOT NULL,
             supply INT NOT NULL,
             price DOUBLE PRECISION NOT NULL,
             listed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -292,6 +292,22 @@ async def ensure_schema(conn):
             candle_high DOUBLE PRECISION,
             candle_low DOUBLE PRECISION
         )
+    """)
+    # 이름을 `coins.name` 에 복사해 두던 시절의 잔재를 치운다. 코인 이름은 이제 `heroes` 의
+    # 이름을 그대로 빌려 쓰므로(`coin_name`), 복사본을 남겨두면 영웅 이름을 고쳤을 때
+    # 옛 코인만 옛 이름으로 남는다 — 소환 이력에 이름을 복사하지 않는 것과 같은 이유다.
+    # 이 기능은 아직 배포된 적이 없어 지워질 행이 없다.
+    await conn.execute("ALTER TABLE coins ADD COLUMN IF NOT EXISTS hero_id INT")
+    await conn.execute("ALTER TABLE coins DROP COLUMN IF EXISTS name")
+    # ADD COLUMN 으로 생긴 칸은 nullable 이라, 새로 만든 DB(NOT NULL)와 조용히 갈린다.
+    # 비어 있을 때만 맞춰준다 — 조건 없이 걸면 옛 행 하나 때문에 봇이 안 뜬다.
+    await conn.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM coins WHERE hero_id IS NULL) THEN
+                ALTER TABLE coins ALTER COLUMN hero_id SET NOT NULL;
+            END IF;
+        END $$;
     """)
     # 수량은 정수가 아니라 실수다. 매수식 `q = log1p(k*W/P)/k` 가 실수를 주고, 정수로 반올림하면
     # 명세 3장의 왕복 항등식이 깨져 포인트 복제 여지가 생긴다. 400P짜리를 1만P어치 사면 24.x개다.
@@ -2226,12 +2242,12 @@ class CoinState:
     **봉이 마감될 때와 거래할 때만** 쓴다.
     """
 
-    __slots__ = ("coin_id", "name", "supply", "price", "k", "alive",
+    __slots__ = ("coin_id", "hero_id", "supply", "price", "k", "alive",
                  "bucket", "open", "high", "low", "lock")
 
-    def __init__(self, coin_id: int, name: str, supply: int, price: float):
+    def __init__(self, coin_id: int, hero_id: int, supply: int, price: float):
         self.coin_id = coin_id
-        self.name = name
+        self.hero_id = hero_id
         self.supply = supply
         self.price = float(price)
         self.k = config["coin_config"]["impact_lambda"] / supply
@@ -2282,6 +2298,20 @@ def coin_display(price: float) -> int:
     return math.ceil(price)
 
 
+def coin_name(hero_id: int, lang: str) -> str:
+    """코인 이름. **카드게임이 쓰는 영웅 이름을 그대로 빌려 쓴다**(`heroes.name` / `name_en`).
+
+    이름을 `coins` 에 복사해 두지 않는 이유는 소환 이력과 같다 — 복사하면 영웅 이름을 고쳤을
+    때 옛 코인만 옛 이름으로 남는다. 붙이는 말은 언어마다 자리가 달라서(`{name}코인` /
+    `{name} Coin`) 설정 문구로 둔다.
+
+    마스터에 없는 hero_id 는 `#12` 처럼 번호로 적는다 — 소환 이력이 하는 것과 같다.
+    """
+    hero = HEROES.get(hero_id)
+    base = hero_display_name(hero, lang) if hero else f"#{hero_id}"
+    return get_msg(lang, "coin_name", name=base)
+
+
 async def load_coins(conn) -> None:
     """DB에 남아 있는 살아있는 코인을 메모리로 올린다.
 
@@ -2291,10 +2321,10 @@ async def load_coins(conn) -> None:
     """
     coins.clear()
     rows = await conn.fetch(
-        "SELECT coin_id, name, supply, price, candle_start, candle_open, candle_high, candle_low"
+        "SELECT coin_id, hero_id, supply, price, candle_start, candle_open, candle_high, candle_low"
         "  FROM coins WHERE delisted_at IS NULL ORDER BY coin_id")
     for row in rows:
-        state = CoinState(row["coin_id"], row["name"], row["supply"], row["price"])
+        state = CoinState(row["coin_id"], row["hero_id"], row["supply"], row["price"])
         # 진행 중이던 봉을 되살린다. 없으면 다음 observe()가 새로 연다.
         if row["candle_start"] is not None:
             state.bucket = int(row["candle_start"].timestamp())
@@ -2306,24 +2336,29 @@ async def load_coins(conn) -> None:
 
 
 async def list_new_coin(conn) -> CoinState | None:
-    """신규 상장. 상장가는 평형가 고정, 총 발행량은 로그균등."""
+    """신규 상장. 상장가는 평형가 고정, 총 발행량은 로그균등.
+
+    **종목 이름은 영웅 마스터에서 고른다**(`coin_name`). 지금 상장돼 있는 영웅만 제외하므로
+    상폐된 영웅은 나중에 다시 나올 수 있다. 마스터가 비어 있으면(=`heroes` 를 못 읽은 상태)
+    상장하지 않는다 — 전부 `#12코인` 이 되느니 코인 기능만 조용히 쉬는 쪽이 낫다.
+    """
     conf = config["coin_config"]
-    used = {c.name for c in coins.values()}
-    pool = [n for n in conf["names"] if n not in used]
+    used = {c.hero_id for c in coins.values()}
+    pool = [hero_id for hero_id in HEROES if hero_id not in used]
     if not pool:
         return None
-    name = random.choice(pool)
+    hero_id = random.choice(pool)
     supply = int(math.exp(random.uniform(
         math.log(conf["supply_min"]), math.log(conf["supply_max"]))))
     price = float(conf["start_price"])
     coin_id = await conn.fetchval(
-        "INSERT INTO coins (name, supply, price) VALUES ($1, $2, $3) RETURNING coin_id",
-        name, supply, price)
-    state = CoinState(coin_id, name, supply, price)
+        "INSERT INTO coins (hero_id, supply, price) VALUES ($1, $2, $3) RETURNING coin_id",
+        hero_id, supply, price)
+    state = CoinState(coin_id, hero_id, supply, price)
     # 첫 틱을 기다리지 않고 봉을 바로 연다 — 안 그러면 상장 직후 몇 초 동안 차트가 비어 있다.
     state.observe(time.time())
     coins[coin_id] = state
-    print(f"🪙 신규 상장: {name} (발행량 {supply:,}, {price:.0f}P)")
+    print(f"🪙 신규 상장: {coin_name(hero_id, 'ko')} (발행량 {supply:,}, {price:.0f}P)")
     return state
 
 
@@ -2337,7 +2372,8 @@ async def delist_coin(conn, state: CoinState) -> None:
     burned = await conn.fetchval(
         "WITH gone AS (DELETE FROM coin_holdings WHERE coin_id = $1 RETURNING qty)"
         " SELECT coalesce(sum(qty), 0) FROM gone", state.coin_id)
-    print(f"🪙 상폐: {state.name} ({state.price:.2f}P, 소각 {float(burned):.2f}개)")
+    print(f"🪙 상폐: {coin_name(state.hero_id, 'ko')} "
+          f"({state.price:.2f}P, 소각 {float(burned):.2f}개)")
 
 
 async def persist_candle(conn, state: CoinState, closed: tuple) -> None:
@@ -2397,10 +2433,10 @@ async def coin_engine() -> None:
                     if (shut := state.observe(now)) is not None:
                         closed.append((state, shut))
 
-            # 이름이 동나면 `list_new_coin`이 계속 None을 준다. 그걸 확인하려고 매 틱마다
-            # 연결을 잡으면 1~3초마다 풀을 건드리게 되므로, **여기서 미리 걸러낸다.**
+            # 쓸 수 있는 영웅이 동나면 `list_new_coin`이 계속 None을 준다. 그걸 확인하려고 매
+            # 틱마다 연결을 잡으면 1~3초마다 풀을 건드리게 되므로, **여기서 미리 걸러낸다.**
             short = (len(coins) < conf["target_listed"]
-                     and len({c.name for c in coins.values()}) < len(conf["names"]))
+                     and len({c.hero_id for c in coins.values()}) < len(HEROES))
             stale = (now - _coin_baseline_at) > COIN_BASELINE_TTL
             if not (closed or dying or short or stale):
                 continue
@@ -2412,7 +2448,7 @@ async def coin_engine() -> None:
                     async with state.lock:
                         await delist_coin(conn, state)
                 while (len(coins) < conf["target_listed"]
-                       and len({c.name for c in coins.values()}) < len(conf["names"])):
+                       and len({c.hero_id for c in coins.values()}) < len(HEROES)):
                     if await list_new_coin(conn) is None:
                         break
                 if stale:
@@ -2468,10 +2504,10 @@ def coin_labels(lang: str) -> dict:
             for key in config["messages"]["ko"] if key.startswith("web_coin_")}
 
 
-def coin_prices(held: dict[int, float] | None = None) -> list[dict]:
+def coin_prices(lang: str, held: dict[int, float] | None = None) -> list[dict]:
     """시세 목록. **DB를 한 번도 보지 않는다** — 가격은 메모리가 정본이고 등락률 기준가는
     엔진이 1분마다 갱신해둔 캐시를 쓴다. 화면 폴링이 이 경로만 타게 해서 정상 상태의
-    DB 부하를 0으로 만든다.
+    DB 부하를 0으로 만든다. 이름도 메모리(`HEROES`)에서 나오므로 여기서 조회가 늘지 않는다.
     """
     held = held or {}
     out = []
@@ -2480,7 +2516,7 @@ def coin_prices(held: dict[int, float] | None = None) -> list[dict]:
         qty = held.get(state.coin_id, 0.0)
         out.append({
             "id": state.coin_id,
-            "name": state.name,
+            "name": coin_name(state.hero_id, lang),
             "price": coin_display(state.price),
             "supply": state.supply,
             "change": None if not base else round((state.price / base - 1) * 100, 2),
@@ -2506,12 +2542,15 @@ async def coin_snapshot(conn, user_id: int, lang: str) -> dict:
 
     return {
         "points": points,
-        "coins": coin_prices(held),
+        "coins": coin_prices(lang, held),
         "cooldown_seconds": max(0, int(until.timestamp() - time.time())) if until else 0,
         "cooldown_minutes": conf["trade_cooldown_seconds"] // 60,
         "delist_price": conf["delist_price"],
         "min_order_points": conf["min_order_points"],
         "max_order_fraction": conf["max_order_fraction"],
+        # 화면이 체결 예상치를 서버와 같은 식으로 계산하려면 임팩트 계수가 필요하다.
+        # **화면에 숫자를 박아두지 말 것** — 설정을 고쳐도 예상치만 조용히 틀려진다.
+        "impact_lambda": conf["impact_lambda"],
         "messages": coin_labels(lang),
     }
 
@@ -2545,7 +2584,7 @@ async def handle_coin_prices(request):
         return web.json_response({"error": "expired"}, status=403)
     if limited := rate_limited("coin_poll", resolved[0], burst=20, per_second=2):
         return limited
-    return web.json_response({"coins": coin_prices(),
+    return web.json_response({"coins": coin_prices(resolved[1]),
                               "seconds": config["coin_config"]["candle_seconds"]})
 
 
@@ -2708,7 +2747,7 @@ async def handle_coin_trade(request):
         "ok": True,
         "points": int(got["points"]),
         "cooldown_seconds": cooldown,
-        "message": get_msg(lang, key, name=state.name,
+        "message": get_msg(lang, key, name=coin_name(state.hero_id, lang),
                            qty=f"{qty:,.2f}", points=f"{pay:,}"),
     })
 
