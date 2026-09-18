@@ -18,7 +18,6 @@
   [hidden] { display: none !important; }
 
   #app { display: grid; grid-template-columns: 1fr 260px; height: 100%; }
-  @media (max-width: 760px) { #app { grid-template-columns: 1fr; } .panel { display: none; } }
 
   /* ── 본문: 필터 + 방 목록 ─────────────────── */
   .main { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -81,9 +80,14 @@
   .user.me { color: var(--accent); font-weight: 600; }
 
   /* ── 겹쳐 뜨는 창 (방 만들기 / 비밀번호 / 초대) ── */
+  /* `align-items: center` 대신 flex-start + `margin: auto`인 이유: 창이 화면보다 높으면
+     center는 넘친 부분을 **위로 잘라내서** 스크롤로도 닿을 수 없다. auto 마진은 자리가
+     남을 때만 가운데로 밀어주므로 좁은 화면(특히 키보드가 올라온 상태)에서도 다 보인다. */
   .veil { position: fixed; inset: 0; background: rgba(8,9,13,.72); display: flex;
-          align-items: center; justify-content: center; padding: 20px; z-index: 20; }
+          align-items: flex-start; justify-content: center; padding: 20px; z-index: 20;
+          overflow-y: auto; }
   .dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+            margin: auto;
             padding: 18px; width: min(380px, 100%); display: flex; flex-direction: column; gap: 12px; }
   .dialog h3 { margin: 0; font-size: 16px; }
   .dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
@@ -101,6 +105,29 @@
   .err { font-size: 12px; color: var(--bad); min-height: 16px; }
 
   /* 초대 알림 — 화면 오른쪽 아래에 쌓인다 */
+  /* ══ 모바일 (가로 760px 이하) ═════════════════════════════════════════
+     **맨 끝에 둬야 한다** — 특이도가 같으면 뒤에 온 규칙이 이기므로, 앞쪽에 두면 나중에
+     나오는 `.panel { ... display: flex; ... }`에 덮여 통째로 죽는다(실제로 그랬다). */
+  @media (max-width: 760px) {
+    /* 우측 패널을 **아래 얇은 줄**로 돌린다. 접속 인원은 남기고 접속자 목록은 접는다 —
+       로비에서 사람 목록을 쓰는 곳은 초대인데, 초대는 방 안에서만 한다. */
+    #app { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    .panel { flex-direction: row; align-items: center; gap: 12px;
+             border-left: none; border-top: 1px solid var(--line);
+             padding: 8px 14px calc(8px + env(safe-area-inset-bottom, 0px)); }
+    .panel h2, .users { display: none; }
+    .online { font-size: 18px; }
+    .inrooms { margin-left: auto; }
+
+    /* 손가락 기준 최소 크기 */
+    .create, .refresh, .room .join,
+    .field input, .field select, .dialog .row button { min-height: 44px; }
+    .rooms { padding: 12px; }
+    .room .join { margin-left: auto; }
+    /* 알림이 화면 폭을 넘지 않게 */
+    .invites { left: 12px; right: 12px; }
+  }
+
   .invites { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column;
              gap: 8px; z-index: 30; }
   .invite { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px;
