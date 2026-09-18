@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lobby</title>
+<script src="/name_fit.js" defer></script>
 <style>
   /* 대전 화면(match_page.html)과 같은 색·같은 우측 패널 구조를 쓴다 — 두 화면을 오가므로
      여기서만 다른 팔레트를 쓰면 다른 사이트처럼 보인다. */
@@ -17,10 +18,10 @@
          font-family: "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif; }
   [hidden] { display: none !important; }
 
-  #app { display: grid; grid-template-columns: 1fr 260px; height: 100%; }
+  #app { display: grid; grid-template-columns: minmax(0, 1fr) 260px; height: 100%; }
 
   /* ── 본문: 필터 + 방 목록 ─────────────────── */
-  .main { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .main { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
   header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
   .titlerow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   h1 { margin: 0; font-size: 20px; }
@@ -51,8 +52,11 @@
            flex-direction: column; gap: 10px; }
   .room { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
           padding: 12px 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .room .details { flex: 1 1 180px; min-width: 0; max-width: 100%; }
   .room .rname { font-size: 15px; font-weight: 600; }
-  .room .host { font-size: 13px; color: var(--dim); }
+  .room .host { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+  .room .host .label { flex: none; }
+  .room .host .fit-name { flex: 1; }
   .room .tags { display: flex; gap: 6px; flex-wrap: wrap; }
   .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line);
          color: var(--dim); }
@@ -111,7 +115,7 @@
   @media (max-width: 760px) {
     /* 우측 패널을 **아래 얇은 줄**로 돌린다. 접속 인원은 남기고 접속자 목록은 접는다 —
        로비에서 사람 목록을 쓰는 곳은 초대인데, 초대는 방 안에서만 한다. */
-    #app { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr auto; }
     .panel { flex-direction: row; align-items: center; gap: 12px;
              border-left: none; border-top: 1px solid var(--line);
              padding: 8px 14px calc(8px + env(safe-area-inset-bottom, 0px)); }
@@ -123,16 +127,17 @@
     .create, .refresh, .room .join,
     .field input, .field select, .dialog .row button { min-height: 44px; }
     .rooms { padding: 12px; }
+    .room .details { flex-basis: 100%; width: 100%; }
     .room .join { margin-left: auto; }
     /* 알림이 화면 폭을 넘지 않게 */
-    .invites { left: 12px; right: 12px; }
+    .invites { left: auto; right: 12px; }
   }
 
-  .invites { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column;
-             gap: 8px; z-index: 30; }
+  .invites { position: fixed; right: 12px; bottom: 16px; display: flex; flex-direction: column;
+             width: min(300px, calc(100vw - 24px)); gap: 8px; z-index: 30; }
   .invite { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px;
             padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
-            box-shadow: 0 6px 20px rgba(0,0,0,.5); max-width: 300px; }
+            box-shadow: 0 6px 20px rgba(0,0,0,.5); width: 100%; }
   .invite .who { font-size: 13px; }
   .invite .row { display: flex; gap: 8px; justify-content: flex-end; }
 
@@ -273,9 +278,10 @@ function renderRooms() {
     if (room.playing) tags.push(`<span class="tag playing">${escapeHtml(data.messages.web_room_playing)}</span>`);
 
     el.innerHTML =
-      `<div>
-         <div class="rname">${escapeHtml(room.name)}</div>
-         <div class="host">${escapeHtml(data.messages.web_room_host)} ${escapeHtml(room.host)}</div>
+      `<div class="details">
+         <div class="rname fit-name">${escapeHtml(room.name)}</div>
+         <div class="host"><span class="label">${escapeHtml(data.messages.web_room_host)}</span>
+           <span class="fit-name">${escapeHtml(room.host)}</span></div>
        </div>
        <div class="tags">${tags.join("")}</div>
        <span class="people">${msg("web_room_people", { count: room.people })}</span>
@@ -296,7 +302,7 @@ function renderUsers() {
   }
   for (const user of state.users) {
     const el = document.createElement("div");
-    el.className = "user" + (user.id === data.me.id ? " me" : "");
+    el.className = "user fit-name" + (user.id === data.me.id ? " me" : "");
     el.textContent = user.name;
     box.appendChild(el);
   }
@@ -311,8 +317,8 @@ function renderInvites() {
     const el = document.createElement("div");
     el.className = "invite";
     el.innerHTML =
-      `<div class="who">${msg("web_lobby_invited", { name: escapeHtml(invite.host) })}</div>
-       <div class="who">${escapeHtml(invite.name)}</div>
+      `<div class="who fit-name">${msg("web_lobby_invited", { name: escapeHtml(invite.host) })}</div>
+       <div class="who fit-name">${escapeHtml(invite.name)}</div>
        <div class="row">
          <button class="btn" data-no>${escapeHtml(data.messages.web_lobby_invite_decline)}</button>
          <button class="btn primary" data-yes>${escapeHtml(data.messages.web_lobby_invite_accept)}</button>
@@ -415,7 +421,7 @@ function openCreate() {
       `<div class="field" style="width:100%">
          <label>${escapeHtml(data.messages.web_lobby_name_label)}</label>
          <input type="text" id="dName" maxlength="40"
-                placeholder="${escapeHtml(data.messages.web_lobby_name_placeholder)}">
+                placeholder="${escapeHtml(msg("web_lobby_default_name", { name: data.me.name }))}">
        </div>
        <div class="field" style="width:100%">
          <label>${escapeHtml(data.messages.web_lobby_wager_label)}</label>
