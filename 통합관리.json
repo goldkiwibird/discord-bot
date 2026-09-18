@@ -1,5 +1,6 @@
 {
   "notice_config": {
+    "channel": "📢announcement",
     "webhook_url": "https://discord.com/api/webhooks/1544543154789687346/B_1pjOuPdwKWYEEeqlSMZtQvUjxNXNQVQvdf1PQ_lJgFzDiRdP_bzyB_SCrEAyL9KjlQ"
   },
   "backup_config": {
@@ -21,12 +22,12 @@
   },
   "rules_config": {
     "categories": {
-      "en": "――――――― 영어 채널",
+      "en": "――――――― English-Channel",
       "ko": "――――――― 한국어 채널"
     },
     "channels": {
-      "en": "커뮤니티-규칙-영어",
-      "ko": "커뮤니티-규칙-한국어"
+      "en": "community-rules",
+      "ko": "커뮤니티-규칙"
     },
     "roles": {
       "en": "EN Guardian",
@@ -59,12 +60,12 @@
   },
   "voice_config": {
     "categories": {
-      "――――――― 영어 음성 채널": {
-        "channel": "🔊영어음성채팅방-생성",
+      "――――――― Voice-channel": {
+        "channel": "🔊create-voice-channel",
         "lang": "en"
       },
-      "――――――― 한국어 음성 채널": {
-        "channel": "🔊한국어음성채팅방-생성",
+      "――――――― 음성 채널": {
+        "channel": "🔊음성-채팅방-생성",
         "lang": "ko"
       }
     },
@@ -103,12 +104,12 @@
   },
   "text_config": {
     "categories": {
-      "――――――― 영어 채널": {
-        "channel": "🔒영어전용채팅방",
+      "――――――― English-Channel": {
+        "channel": "🔒dedicated-thread",
         "lang": "en"
       },
       "――――――― 한국어 채널": {
-        "channel": "🔒한국어전용채팅방",
+        "channel": "🔒전용-스레드",
         "lang": "ko"
       }
     },
@@ -157,7 +158,7 @@
   },
   "translation_config": {
     "categories": {
-      "――――――― 영어 채널": {
+      "――――――― English-Channel": {
         "target_channel": "번역-영어",
         "target_lang": "ko"
       }
